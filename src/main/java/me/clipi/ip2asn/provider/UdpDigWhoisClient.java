@@ -221,7 +221,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 			}
 
 			asn_cidrMask_offset[2] = offset;
-			long asn = readShortUntilPipe(response, length, asn_cidrMask_offset);
+			long asn = readShortUntilPipe(response, length, asn_cidrMask_offset, 0);
 			if (asn == -1) return false;
 			asn &= 0xFFFF_FFFFL;
 			offset = asn_cidrMask_offset[2];
@@ -231,7 +231,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 			while (response[offset++] != '/') {
 			}
 			asn_cidrMask_offset[2] = offset;
-			long cidrMask = readShortUntilPipe(response, length, asn_cidrMask_offset);
+			long cidrMask = readShortUntilPipe(response, length, asn_cidrMask_offset, -1);
 			if (cidrMask == -1) return false;
 			final int ipResponseLen = offset - ipResponseOffset + (int) (cidrMask >>> 16);
 			cidrMask &= 0xFFFF_FFFFL;
@@ -271,20 +271,31 @@ public class UdpDigWhoisClient implements IIP2ASN {
 		}
 	}
 
-	private static long readShortUntilPipe(byte[] response, int length, int[] asn_cidrMask_offset) {
+	private static long readShortUntilPipe(byte[] response, int length, int[] asn_cidrMask_offset, int recursion) {
 		int offset = asn_cidrMask_offset[2];
-		int numLength = 0;
+		int numByteLength = 0;
 		int num = 0;
-		while (true) {
+		do {
 			int digit = response[offset++] & 0xFF;
 			if (digit == '|') break;
 			if (digit == ' ') {
+				final int firstSpace = offset - 1;
 				while (response[offset] == ' ') ++offset;
-				if (response[offset++] != '|') {
-					warnUnexpectedPacketReceived(response, length, 7);
-					return -1;
+				if (response[offset] == '|') {
+					++offset;
+					break;
 				}
-				break;
+				// If an ip has multiple ASNs associated with it (which should be impossible,
+				// but in reality it may occur), just return the lowest ASN
+				if (response[offset] >= '0' && response[offset] <= '9' && recursion >= 0 && recursion < 5) {
+					asn_cidrMask_offset[2] = offset;
+					long next = readShortUntilPipe(response, length, asn_cidrMask_offset, recursion + 1);
+					numByteLength += (int) (next >>> 16) + offset - firstSpace;
+					next &= 0xFFFF_FFFFL;
+					return ((long) numByteLength << 32) | (num < next ? num : next);
+				}
+				warnUnexpectedPacketReceived(response, length, 7);
+				return -1;
 			}
 			digit -= '0';
 			if (digit < 0 || digit > 9) {
@@ -293,11 +304,11 @@ public class UdpDigWhoisClient implements IIP2ASN {
 			}
 			num *= 10;
 			num += digit;
-			++numLength;
-		}
+			++numByteLength;
+		} while (true);
 		while (response[offset] == ' ') ++offset;
 		asn_cidrMask_offset[2] = offset;
-		return ((long) numLength << 32) | num;
+		return ((long) numByteLength << 32) | num;
 	}
 
 	private static void warnUnexpectedPacketReceived(byte[] response, int length, int errno) {
