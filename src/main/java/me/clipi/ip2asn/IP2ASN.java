@@ -29,6 +29,15 @@ public class IP2ASN implements IIP2ASN {
 		this(1_750);
 	}
 
+	@Override
+	public void close() {
+		try {
+			// if (fallbackTcp != null) fallbackTcp.close();
+		} finally {
+			if (fallbackUdp != null) fallbackUdp.close();
+		}
+	}
+
 	public IP2ASN(long timeoutMillis) {
 		fallbackUdp = UdpDigWhoisClient.createOrNull(
 			hardcoded(1, 1, 1, 1),

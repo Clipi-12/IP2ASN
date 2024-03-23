@@ -1,11 +1,7 @@
 package me.clipi.ip2asn;
 
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.DynamicContainer;
-import org.junit.jupiter.api.TestFactory;
+import org.junit.jupiter.api.*;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -13,7 +9,6 @@ import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
@@ -23,11 +18,14 @@ import static org.junit.jupiter.api.DynamicContainer.dynamicContainer;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 public class TestCorrectCases {
-	private static final Logger LOGGER = Logger.getLogger("JUnit Testing");
-
 	private static Map<InetAddress, AS> data;
 	private static final IP2ASN ip2asn = new IP2ASN();
 	private static final Level LOG_LEVEL = Level.parse(System.getProperty("me.clipi.testing.log_level", "INFO"));
+
+	@AfterAll
+	public static void cleanup() {
+		ip2asn.close();
+	}
 
 	@BeforeAll
 	public static void prepareData() throws IOException {
@@ -82,24 +80,17 @@ public class TestCorrectCases {
 	private DynamicContainer testAllFetches(String testNamePrefix, @Nullable IIP2ASN ip2asn) {
 		Assertions.assertNotNull(ip2asn);
 
-		AtomicInteger count = new AtomicInteger();
-
 		return dynamicContainer(
 			testNamePrefix,
 			data.entrySet()
 				.parallelStream()
 				.map(info -> dynamicTest(
 					testNamePrefix + " test for ip " + info.getKey(),
-					() -> testSingleFetch(ip2asn, info.getKey(), info.getValue(), count))
+					() -> {
+						InetAddress ip = info.getKey();
+						AS fetch = ip2asn.ip2asn(ip);
+						Assertions.assertEquals(info.getValue(), fetch, ip::toString);
+					})
 				));
-	}
-
-	private void testSingleFetch(@NotNull IIP2ASN ip2asn, InetAddress ip, AS manual, AtomicInteger count) {
-		AS fetch = ip2asn.ip2asn(ip);
-		synchronized (LOGGER) {
-			Assertions.assertEquals(manual, fetch, ip::toString);
-			int i = count.incrementAndGet();
-			if ((i & 127) == 0) LOGGER.info(i + "/" + data.size());
-		}
 	}
 }

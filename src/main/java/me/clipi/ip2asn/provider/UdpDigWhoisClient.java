@@ -6,11 +6,14 @@ import me.clipi.ip2asn.IP2ASN;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.lang.invoke.VarHandle;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -20,7 +23,7 @@ import java.util.logging.Logger;
  * <p>
  * <a href="https://levelup.gitconnected.com/dns-request-and-response-in-java-acbd51ad3467">Medium article</a>
  */
-public class UdpDigWhoisClient implements IIP2ASN {
+public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 	private static final Logger LOGGER;
 
 	static {
@@ -37,9 +40,18 @@ public class UdpDigWhoisClient implements IIP2ASN {
 	private final DatagramSocket socket;
 	private final String[] asCountryCodeResult = new String[0x10000];
 	private final int[] asnResult = new int[0x10000];
-	private volatile short id;
-	private volatile int listeners;
-	private volatile Thread receiveThread;
+	private final Thread[] requesters = new Thread[0x10000];
+	private final AtomicInteger id = new AtomicInteger();
+
+
+	private volatile boolean isAlive = true;
+	private final Thread udpListener;
+
+	@Override
+	public void close() {
+		isAlive = false;
+		LockSupport.unpark(udpListener);
+	}
 
 	private static byte[] domainToLabels(String domain) {
 		Byte[] ret = Arrays.stream(domain.split("\\."))
@@ -90,105 +102,94 @@ public class UdpDigWhoisClient implements IIP2ASN {
 		this.timeoutMillis = timeoutMillis;
 		socket = new DatagramSocket();
 		socket.setSoTimeout(5_000);
+
+		udpListener = new Thread(() -> {
+			final int THEORETICAL_UDP_LIMIT = 0x10000;
+			byte[] response = new byte[THEORETICAL_UDP_LIMIT];
+			DatagramPacket packet = new DatagramPacket(response, response.length);
+
+			int[] asn_cidrMask_offset = { 0, 0, 0 };
+			String[] asCC = { null };
+
+
+			listen:
+			while (isAlive) {
+				try {
+					socket.receive(packet);
+				} catch (SocketTimeoutException ignored) {
+					LockSupport.park();
+					continue;
+				} catch (IOException ex) {
+					LOGGER.log(Level.SEVERE, "Socket exception while receiving data", ex);
+					break;
+				}
+				int length = packet.getLength();
+				if (length > THEORETICAL_UDP_LIMIT) continue;
+
+				final int ANCOUNT = shortFromBytes(response[6], response[7]);
+
+				// Assert correct header
+				if (!(
+					12 < length &&
+					(response[2] & 0b1111_1011) == 0b1000_0001 &&
+					(response[3] & 0b0111_1111) == 0 &&
+					response[4] == 0 &&
+					response[5] == 1 &&
+					ANCOUNT > 0 &&
+					response[8] == 0 &&
+					response[9] == 0 &&
+					response[10] == 0 &&
+					response[11] == 0
+				)) {
+					warnUnexpectedPacketReceived(response, length, 1);
+					continue;
+				}
+
+				int offset = 12;
+				// noinspection StatementWithEmptyBody
+				while (response[offset++] != 0 && offset < length) {
+				}
+				// Assert correct question
+				if (!(
+					offset + 5 < length &&
+					response[offset] == 0 &&
+					response[offset + 1] == 16 &&
+					response[offset + 2] == 0 &&
+					response[offset + 3] == 1
+				)) {
+					warnUnexpectedPacketReceived(response, length, 2);
+					continue;
+				}
+
+
+				asn_cidrMask_offset[0] = 0;
+				asn_cidrMask_offset[1] = 0;
+				asn_cidrMask_offset[2] = offset + 4;
+				asCC[0] = null;
+				for (int i = 0; i < ANCOUNT; ++i) {
+					if (!readTxtAnswer(response, length, asn_cidrMask_offset, asCC))
+						continue listen;
+				}
+				if (asn_cidrMask_offset[2] != length) {
+					warnUnexpectedPacketReceived(response, length, 9);
+					continue;
+				}
+				int id = shortFromBytes(response[0], response[1]);
+
+				asnResult[id] = asn_cidrMask_offset[0];
+				VarHandle.fullFence();
+				asCountryCodeResult[id] = asCC[0];
+				VarHandle.fullFence();
+				LockSupport.unpark(requesters[id]);
+			}
+
+			socket.close();
+		});
+		udpListener.start();
 	}
 
 	private static int shortFromBytes(byte high, byte low) {
 		return ((high & 0xFF) << 8) | (low & 0xFF);
-	}
-
-	private void ensureReceiveThread() {
-		if (receiveThread != null) return;
-		synchronized (socket) {
-			if (receiveThread != null) return;
-
-			receiveThread = new Thread(() -> {
-				final int THEORETICAL_UDP_LIMIT = 0x10000;
-				byte[] response = new byte[THEORETICAL_UDP_LIMIT];
-				DatagramPacket packet = new DatagramPacket(response, response.length);
-
-				int[] asn_cidrMask_offset = { 0, 0, 0 };
-				String[] asCC = { null };
-
-
-				listen:
-				while (listeners > 0) {
-					try {
-						socket.receive(packet);
-					} catch (SocketTimeoutException ignored) {
-						continue;
-					} catch (IOException ex) {
-						LOGGER.log(Level.SEVERE, "Socket exception while receiving data", ex);
-						break;
-					}
-					if (listeners <= 0) break;
-					int length = packet.getLength();
-					if (length > THEORETICAL_UDP_LIMIT) continue;
-
-					final int ANCOUNT = shortFromBytes(response[6], response[7]);
-
-					// Assert correct header
-					if (!(
-						12 < length &&
-						(response[2] & 0b1111_1011) == 0b1000_0001 &&
-						(response[3] & 0b0111_1111) == 0 &&
-						response[4] == 0 &&
-						response[5] == 1 &&
-						ANCOUNT > 0 &&
-						response[8] == 0 &&
-						response[9] == 0 &&
-						response[10] == 0 &&
-						response[11] == 0
-					)) {
-						warnUnexpectedPacketReceived(response, length, 1);
-						continue;
-					}
-
-					int offset = 12;
-					// noinspection StatementWithEmptyBody
-					while (response[offset++] != 0 && offset < length) {
-					}
-					// Assert correct question
-					if (!(
-						offset + 5 < length &&
-						response[offset] == 0 &&
-						response[offset + 1] == 16 &&
-						response[offset + 2] == 0 &&
-						response[offset + 3] == 1
-					)) {
-						warnUnexpectedPacketReceived(response, length, 2);
-						continue;
-					}
-
-
-					asn_cidrMask_offset[0] = 0;
-					asn_cidrMask_offset[1] = 0;
-					asn_cidrMask_offset[2] = offset + 4;
-					asCC[0] = null;
-					for (int i = 0; i < ANCOUNT; ++i) {
-						if (!readTxtAnswer(response, length, asn_cidrMask_offset, asCC))
-							continue listen;
-					}
-					if (asn_cidrMask_offset[2] != length) {
-						warnUnexpectedPacketReceived(response, length, 9);
-						continue;
-					}
-					int id = shortFromBytes(response[0], response[1]);
-
-					synchronized (asCountryCodeResult) {
-						asnResult[id] = asn_cidrMask_offset[0];
-						asCountryCodeResult[id] = asCC[0];
-						asCountryCodeResult.notifyAll();
-					}
-				}
-
-				synchronized (socket) {
-					assert receiveThread == Thread.currentThread();
-					receiveThread = null;
-					if (listeners > 0) ensureReceiveThread();
-				}
-			});
-			receiveThread.start();
-		}
 	}
 
 	private static boolean readTxtAnswer(byte[] response, int length, int[] asn_cidrMask_offset, String[] asCC) {
@@ -335,10 +336,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 		byte[] req =
 			new byte[whoisHostOffset + whoisHost.length + 5];
 
-		int id;
-		synchronized (this) {
-			id = this.id++;
-		}
+		int id = this.id.incrementAndGet() & 0xFFFF;
 		req[0] = (byte) (id >>> 8);
 		req[1] = (byte) id;
 		// RD Flag
@@ -361,6 +359,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 			encodeIPv4(ipAddress, req);
 		}
 
+		requesters[id] = Thread.currentThread();
 		DatagramPacket udpPacket = new DatagramPacket(req, req.length, hostDns, port);
 		int udpTries = 3;
 		fetch:
@@ -370,33 +369,31 @@ public class UdpDigWhoisClient implements IIP2ASN {
 				socket.send(udpPacket);
 			} catch (IOException ex) {
 				LOGGER.log(Level.SEVERE, "Socket exception while sending data", ex);
+				requesters[id] = null;
 				return null;
 			}
 
-			synchronized (asCountryCodeResult) {
-				++listeners;
-				ensureReceiveThread();
-				try {
-					while (asCountryCodeResult[id] == null) {
-						long timeout = until - System.currentTimeMillis();
-						if (timeout <= 0) {
-							// The packet probably got lost
-							continue fetch;
-						}
-						try {
-							asCountryCodeResult.wait(timeout);
-						} catch (InterruptedException ex) {
-							throw new RuntimeException(ex);
-						}
-					}
-					int asn = asnResult[id];
-					String countryCode = asCountryCodeResult[id];
-					asCountryCodeResult[id] = null;
-					return new AS(asn, countryCode);
-				} finally {
-					--listeners;
-				}
+			if (!isAlive) {
+				requesters[id] = null;
+				return null;
 			}
+			LockSupport.unpark(udpListener);
+
+			String countryCode;
+			VarHandle.fullFence();
+			do {
+				countryCode = asCountryCodeResult[id];
+				if (countryCode != null) break;
+				// The packet probably got lost
+				if (System.currentTimeMillis() > until) continue fetch;
+				LockSupport.parkUntil(until);
+			} while (true);
+			VarHandle.fullFence();
+
+			int asn = asnResult[id];
+			asCountryCodeResult[id] = null;
+			requesters[id] = null;
+			return new AS(asn, countryCode);
 		} while (--udpTries > 0);
 
 		return null;
