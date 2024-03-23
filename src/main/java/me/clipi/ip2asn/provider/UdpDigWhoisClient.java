@@ -2,6 +2,7 @@ package me.clipi.ip2asn.provider;
 
 import me.clipi.ip2asn.AS;
 import me.clipi.ip2asn.IIP2ASN;
+import me.clipi.ip2asn.IP2ASN;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -20,7 +21,14 @@ import java.util.logging.Logger;
  * <a href="https://levelup.gitconnected.com/dns-request-and-response-in-java-acbd51ad3467">Medium article</a>
  */
 public class UdpDigWhoisClient implements IIP2ASN {
-	private static final Logger LOGGER = Logger.getLogger("IP2ASN UdpDigWhoisClient");
+	private static final Logger LOGGER;
+
+	static {
+		// Initialize logger's parent
+		// noinspection ResultOfMethodCallIgnored
+		IP2ASN.class.getClass();
+		LOGGER = Logger.getLogger("IP2ASN.UdpDigWhoisClient");
+	}
 
 	private final InetAddress hostDns;
 	private final byte[] whoisHostV4, whoisHostV6;
@@ -29,9 +37,9 @@ public class UdpDigWhoisClient implements IIP2ASN {
 	private final DatagramSocket socket;
 	private final String[] asCountryCodeResult = new String[0x10000];
 	private final int[] asnResult = new int[0x10000];
-	private short id;
+	private volatile short id;
 	private volatile int listeners;
-	private Thread receiveThread;
+	private volatile Thread receiveThread;
 
 	private static byte[] domainToLabels(String domain) {
 		Byte[] ret = Arrays.stream(domain.split("\\."))
@@ -84,7 +92,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 		socket.setSoTimeout(5_000);
 	}
 
-	private static int fromBytes(byte high, byte low) {
+	private static int shortFromBytes(byte high, byte low) {
 		return ((high & 0xFF) << 8) | (low & 0xFF);
 	}
 
@@ -109,13 +117,14 @@ public class UdpDigWhoisClient implements IIP2ASN {
 					} catch (SocketTimeoutException ignored) {
 						continue;
 					} catch (IOException ex) {
-						throw new RuntimeException(ex);
+						LOGGER.log(Level.SEVERE, "Socket exception while receiving data", ex);
+						break;
 					}
 					if (listeners <= 0) break;
 					int length = packet.getLength();
 					if (length > THEORETICAL_UDP_LIMIT) continue;
 
-					final int ANCOUNT = fromBytes(response[6], response[7]);
+					final int ANCOUNT = shortFromBytes(response[6], response[7]);
 
 					// Assert correct header
 					if (!(
@@ -124,7 +133,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 						(response[3] & 0b0111_1111) == 0 &&
 						response[4] == 0 &&
 						response[5] == 1 &&
-						ANCOUNT != 0 &&
+						ANCOUNT > 0 &&
 						response[8] == 0 &&
 						response[9] == 0 &&
 						response[10] == 0 &&
@@ -163,7 +172,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 						warnUnexpectedPacketReceived(response, length, 9);
 						continue;
 					}
-					int id = fromBytes(response[0], response[1]);
+					int id = shortFromBytes(response[0], response[1]);
 
 					synchronized (asCountryCodeResult) {
 						asnResult[id] = asn_cidrMask_offset[0];
@@ -175,6 +184,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 				synchronized (socket) {
 					assert receiveThread == Thread.currentThread();
 					receiveThread = null;
+					if (listeners > 0) ensureReceiveThread();
 				}
 			});
 			receiveThread.start();
@@ -213,7 +223,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 				return false;
 			}
 			offset += 10;
-			int textLength = fromBytes(response[offset - 2], response[offset - 1]);
+			int textLength = shortFromBytes(response[offset - 2], response[offset - 1]);
 			final int endOfAnswer = offset + textLength;
 			if ((response[offset++] & 0xFF) + 1 != textLength) {
 				warnUnexpectedPacketReceived(response, length, 5);
@@ -233,7 +243,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 			asn_cidrMask_offset[2] = offset;
 			long cidrMask = readShortUntilPipe(response, length, asn_cidrMask_offset, -1);
 			if (cidrMask == -1) return false;
-			final int ipResponseLen = offset - ipResponseOffset + (int) (cidrMask >>> 16);
+			final int ipResponseLen = offset - ipResponseOffset + (int) (cidrMask >>> 32);
 			cidrMask &= 0xFFFF_FFFFL;
 			offset = asn_cidrMask_offset[2];
 
@@ -290,7 +300,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 				if (response[offset] >= '0' && response[offset] <= '9' && recursion >= 0 && recursion < 5) {
 					asn_cidrMask_offset[2] = offset;
 					long next = readShortUntilPipe(response, length, asn_cidrMask_offset, recursion + 1);
-					numByteLength += (int) (next >>> 16) + offset - firstSpace;
+					numByteLength += (int) (next >>> 32) + offset - firstSpace;
 					next &= 0xFFFF_FFFFL;
 					return ((long) numByteLength << 32) | (num < next ? num : next);
 				}
@@ -351,37 +361,45 @@ public class UdpDigWhoisClient implements IIP2ASN {
 			encodeIPv4(ipAddress, req);
 		}
 
-
-		DatagramPacket dnsReqPacket = new DatagramPacket(req, req.length, hostDns, port);
-		final long until = System.currentTimeMillis() + timeoutMillis;
-		try {
-			socket.send(dnsReqPacket);
-		} catch (IOException ex) {
-			LOGGER.log(Level.SEVERE, "TcpWhoisClient Exception", ex);
-			return null;
-		}
-
-		synchronized (asCountryCodeResult) {
-			++listeners;
-			ensureReceiveThread();
+		DatagramPacket udpPacket = new DatagramPacket(req, req.length, hostDns, port);
+		int udpTries = 3;
+		fetch:
+		do {
+			final long until = System.currentTimeMillis() + timeoutMillis;
 			try {
-				while (asCountryCodeResult[id] == null) {
-					long timeout = until - System.currentTimeMillis();
-					if (timeout <= 0) return null;
-					try {
-						asCountryCodeResult.wait(timeout);
-					} catch (InterruptedException ex) {
-						throw new RuntimeException(ex);
-					}
-				}
-				int asn = asnResult[id];
-				String countryCode = asCountryCodeResult[id];
-				asCountryCodeResult[id] = null;
-				return new AS(asn, countryCode);
-			} finally {
-				--listeners;
+				socket.send(udpPacket);
+			} catch (IOException ex) {
+				LOGGER.log(Level.SEVERE, "Socket exception while sending data", ex);
+				return null;
 			}
-		}
+
+			synchronized (asCountryCodeResult) {
+				++listeners;
+				ensureReceiveThread();
+				try {
+					while (asCountryCodeResult[id] == null) {
+						long timeout = until - System.currentTimeMillis();
+						if (timeout <= 0) {
+							// The packet probably got lost
+							continue fetch;
+						}
+						try {
+							asCountryCodeResult.wait(timeout);
+						} catch (InterruptedException ex) {
+							throw new RuntimeException(ex);
+						}
+					}
+					int asn = asnResult[id];
+					String countryCode = asCountryCodeResult[id];
+					asCountryCodeResult[id] = null;
+					return new AS(asn, countryCode);
+				} finally {
+					--listeners;
+				}
+			}
+		} while (--udpTries > 0);
+
+		return null;
 	}
 
 	private static void encodeIPv6(byte[] ip, byte[] out) {

@@ -5,8 +5,11 @@ import org.jetbrains.annotations.Nullable;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.logging.Logger;
 
 public class IP2ASN implements IIP2ASN {
+	private static final Logger LOGGER = Logger.getLogger("IP2ASN");
+
 	private static InetAddress hardcoded(int... address) {
 		byte[] arr = new byte[address.length];
 		for (int i = 0; i < arr.length; ++i) arr[i] = (byte) address[i];
@@ -18,12 +21,12 @@ public class IP2ASN implements IIP2ASN {
 	}
 
 	@Nullable
-	private final UdpDigWhoisClient fallbackUdp;
+	public final UdpDigWhoisClient fallbackUdp;
 	// @Nullable
-	// private final TcpWhoisClient fallbackTcp;
+	// public final TcpWhoisClient fallbackTcp;
 
 	public IP2ASN() {
-		this(3_000);
+		this(1_750);
 	}
 
 	public IP2ASN(long timeoutMillis) {
