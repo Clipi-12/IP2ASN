@@ -98,7 +98,7 @@ public class UdpDigWhoisClient implements IIP2ASN {
 				byte[] response = new byte[THEORETICAL_UDP_LIMIT];
 				DatagramPacket packet = new DatagramPacket(response, response.length);
 
-				int[] asn_offset = { 0, 0 };
+				int[] asn_cidrMask_offset = { 0, 0, 0 };
 				String[] asCC = { null };
 
 
@@ -151,21 +151,22 @@ public class UdpDigWhoisClient implements IIP2ASN {
 					}
 
 
-					asn_offset[0] = 0;
-					asn_offset[1] = offset + 4;
+					asn_cidrMask_offset[0] = 0;
+					asn_cidrMask_offset[1] = 0;
+					asn_cidrMask_offset[2] = offset + 4;
 					asCC[0] = null;
 					for (int i = 0; i < ANCOUNT; ++i) {
-						if (!readTxtAnswer(response, length, asn_offset, asCC))
+						if (!readTxtAnswer(response, length, asn_cidrMask_offset, asCC))
 							continue listen;
 					}
-					if (asn_offset[1] != length) {
-						warnUnexpectedPacketReceived(response, length, 11);
+					if (asn_cidrMask_offset[2] != length) {
+						warnUnexpectedPacketReceived(response, length, 9);
 						continue;
 					}
 					int id = fromBytes(response[0], response[1]);
 
 					synchronized (asCountryCodeResult) {
-						asnResult[id] = asn_offset[0];
+						asnResult[id] = asn_cidrMask_offset[0];
 						asCountryCodeResult[id] = asCC[0];
 						asCountryCodeResult.notifyAll();
 					}
@@ -180,8 +181,8 @@ public class UdpDigWhoisClient implements IIP2ASN {
 		}
 	}
 
-	private static boolean readTxtAnswer(byte[] response, int length, int[] asn_offset, String[] asCC) {
-		int offset = asn_offset[1];
+	private static boolean readTxtAnswer(byte[] response, int length, int[] asn_cidrMask_offset, String[] asCC) {
+		int offset = asn_cidrMask_offset[2];
 		try {
 			while (offset < length) {
 				int resHigh = response[offset++] & 0xFF;
@@ -219,43 +220,26 @@ public class UdpDigWhoisClient implements IIP2ASN {
 				return false;
 			}
 
-			int asn = 0;
-			while (true) {
-				int digit = response[offset++] & 0xFF;
-				if (digit == ' ') break;
-				digit -= '0';
-				if (digit < 0 || digit > 9) {
-					warnUnexpectedPacketReceived(response, length, 6);
-					return false;
-				}
-				asn *= 10;
-				asn += digit;
-			}
-			// TODO Response may be "ASN    |     other things       | a"
-			if (!(
-				response[offset++] == '|' &&
-				response[offset++] == ' '
-			)) {
-				warnUnexpectedPacketReceived(response, length, 7);
-				return false;
-			}
+			asn_cidrMask_offset[2] = offset;
+			long asn = readShortUntilPipe(response, length, asn_cidrMask_offset);
+			if (asn == -1) return false;
+			asn &= 0xFFFF_FFFFL;
+			offset = asn_cidrMask_offset[2];
+
 			final int ipResponseOffset = offset;
 			// noinspection StatementWithEmptyBody
-			while (response[offset++] != ' ') {
+			while (response[offset++] != '/') {
 			}
-			final int ipResponseLen = offset - ipResponseOffset - 1;
-			if (!(
-				response[offset++] == '|' &&
-				response[offset++] == ' '
-			)) {
-				warnUnexpectedPacketReceived(response, length, 8);
-				return false;
-			}
+			asn_cidrMask_offset[2] = offset;
+			long cidrMask = readShortUntilPipe(response, length, asn_cidrMask_offset);
+			if (cidrMask == -1) return false;
+			final int ipResponseLen = offset - ipResponseOffset + (int) (cidrMask >>> 16);
+			cidrMask &= 0xFFFF_FFFFL;
+			offset = asn_cidrMask_offset[2];
+
 			final int countryCodeResponseOffset = offset;
-			// noinspection StatementWithEmptyBody
-			while (response[offset++] != ' ') {
-			}
-			final int countryCodeResponseLen = offset - countryCodeResponseOffset - 1;
+			while (response[offset] != ' ' && response[offset] != '|') ++offset;
+			final int countryCodeResponseLen = offset - countryCodeResponseOffset;
 
 			final Level logLevel = Level.FINE;
 			if (LOGGER.isLoggable(logLevel)) LOGGER.log(
@@ -263,26 +247,57 @@ public class UdpDigWhoisClient implements IIP2ASN {
 					// TODO Is it really UTF-8?
 					response, ipResponseOffset, ipResponseLen, StandardCharsets.UTF_8) + " -> " + asn + ")");
 
-			if (asn_offset[0] == 0) asn_offset[0] = asn;
-			if (asn_offset[0] != asn) {
-				warnUnexpectedPacketReceived(response, length, 9);
-				System.err.println(asn + "!=" + asn_offset[0] + "   ");
-				return false;
+			if (cidrMask > asn_cidrMask_offset[1]) {
+				asn_cidrMask_offset[0] = (int) asn;
+				asn_cidrMask_offset[1] = (int) cidrMask;
 			}
+
+			// TODO Should we do checks like countryCodeResponseLen==2 ?
+			//  ISO-3166 has a variant of 3 characters (https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)
 			String asCountryCode = new String(
-				// TODO Is it really UTF-8?
+				// TODO Is it really UTF-8? In that case, the previous TODO should not refer to
+				//  countryCodeResponseLen (byte length), but the char-length
 				response, countryCodeResponseOffset, countryCodeResponseLen, StandardCharsets.UTF_8);
 			if (asCC[0] == null) asCC[0] = asCountryCode;
 			if (!asCC[0].equals(asCountryCode)) {
-				warnUnexpectedPacketReceived(response, length, 10);
+				warnUnexpectedPacketReceived(response, length, 8);
 				return false;
 			}
 
 			offset = endOfAnswer;
 			return true;
 		} finally {
-			asn_offset[1] = offset;
+			asn_cidrMask_offset[2] = offset;
 		}
+	}
+
+	private static long readShortUntilPipe(byte[] response, int length, int[] asn_cidrMask_offset) {
+		int offset = asn_cidrMask_offset[2];
+		int numLength = 0;
+		int num = 0;
+		while (true) {
+			int digit = response[offset++] & 0xFF;
+			if (digit == '|') break;
+			if (digit == ' ') {
+				while (response[offset] == ' ') ++offset;
+				if (response[offset++] != '|') {
+					warnUnexpectedPacketReceived(response, length, 7);
+					return -1;
+				}
+				break;
+			}
+			digit -= '0';
+			if (digit < 0 || digit > 9) {
+				warnUnexpectedPacketReceived(response, length, 6);
+				return -1;
+			}
+			num *= 10;
+			num += digit;
+			++numLength;
+		}
+		while (response[offset] == ' ') ++offset;
+		asn_cidrMask_offset[2] = offset;
+		return ((long) numLength << 32) | num;
 	}
 
 	private static void warnUnexpectedPacketReceived(byte[] response, int length, int errno) {
