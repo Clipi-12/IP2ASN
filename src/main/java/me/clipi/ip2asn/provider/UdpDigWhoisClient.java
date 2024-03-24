@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.IntStream;
 
 /**
  * <p>
@@ -45,12 +46,17 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 
 
 	private volatile boolean isAlive = true;
-	private final Thread udpListener;
+	private final Thread[] udpListeners;
+
+	private void wakeupListeners() {
+		for (Thread udpListener : udpListeners)
+			LockSupport.unpark(udpListener);
+	}
 
 	@Override
 	public void close() {
 		isAlive = false;
-		LockSupport.unpark(udpListener);
+		wakeupListeners();
 	}
 
 	private static byte[] domainToLabels(String domain) {
@@ -103,7 +109,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 		socket = new DatagramSocket();
 		socket.setSoTimeout(5_000);
 
-		udpListener = new Thread(() -> {
+		udpListeners = IntStream.range(0, 3).mapToObj(_idx -> new Thread(() -> {
 			final int THEORETICAL_UDP_LIMIT = 0x10000;
 			byte[] response = new byte[THEORETICAL_UDP_LIMIT];
 			DatagramPacket packet = new DatagramPacket(response, response.length);
@@ -121,7 +127,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 					continue;
 				} catch (IOException ex) {
 					LOGGER.log(Level.SEVERE, "Socket exception while receiving data", ex);
-					break;
+					continue;
 				}
 				int length = packet.getLength();
 				if (length > THEORETICAL_UDP_LIMIT) continue;
@@ -171,7 +177,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 						continue listen;
 				}
 				if (asn_cidrMask_offset[2] != length) {
-					warnUnexpectedPacketReceived(response, length, 9);
+					warnUnexpectedPacketReceived(response, length, 8);
 					continue;
 				}
 				int id = shortFromBytes(response[0], response[1]);
@@ -184,8 +190,9 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			}
 
 			socket.close();
-		});
-		udpListener.start();
+		})).toArray(Thread[]::new);
+		for (Thread udpListener : udpListeners)
+			udpListener.start();
 	}
 
 	private static int shortFromBytes(byte high, byte low) {
@@ -258,21 +265,23 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 					// TODO Is it really UTF-8?
 					response, ipResponseOffset, ipResponseLen, StandardCharsets.UTF_8) + " -> " + asn + ")");
 
-			if (cidrMask > asn_cidrMask_offset[1]) {
-				asn_cidrMask_offset[0] = (int) asn;
-				asn_cidrMask_offset[1] = (int) cidrMask;
-			}
-
 			// TODO Should we do checks like countryCodeResponseLen==2 ?
 			//  ISO-3166 has a variant of 3 characters (https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)
 			String asCountryCode = new String(
 				// TODO Is it really UTF-8? In that case, the previous TODO should not refer to
 				//  countryCodeResponseLen (byte length), but the char-length
 				response, countryCodeResponseOffset, countryCodeResponseLen, StandardCharsets.UTF_8);
-			if (asCC[0] == null) asCC[0] = asCountryCode;
-			if (!asCC[0].equals(asCountryCode)) {
-				warnUnexpectedPacketReceived(response, length, 8);
-				return false;
+
+			final int prevCidrMask = asn_cidrMask_offset[1];
+			if (cidrMask > prevCidrMask) {
+				asn_cidrMask_offset[0] = (int) asn;
+				asn_cidrMask_offset[1] = (int) cidrMask;
+				asCC[0] = asCountryCode;
+			} else if (cidrMask == prevCidrMask && asn < asn_cidrMask_offset[0]) {
+				// If an ip has multiple ASNs associated with it (which should be impossible,
+				// but in reality it may occur), just set the info associated with the lowest ASN
+				asn_cidrMask_offset[0] = (int) asn;
+				asCC[0] = asCountryCode;
 			}
 
 			offset = endOfAnswer;
@@ -377,7 +386,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				requesters[id] = null;
 				return null;
 			}
-			LockSupport.unpark(udpListener);
+			wakeupListeners();
 
 			String countryCode;
 			VarHandle.fullFence();
