@@ -40,6 +40,7 @@ public class IP2ASN implements IIP2ASN {
 
 	public IP2ASN(long timeoutMillis) {
 		fallbackUdp = UdpDigWhoisClient.createOrNull(
+			hardcoded(8, 8, 8, 8),
 			hardcoded(1, 1, 1, 1),
 			"origin.asn.cymru.com", "origin6.asn.cymru.com", 53,
 			timeoutMillis);
