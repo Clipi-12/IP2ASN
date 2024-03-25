@@ -138,6 +138,8 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				int id = shortFromBytes(response[0], response[1]);
 				byte[] requesterBuf = (byte[]) BYTE_ARR_ARR_HANDLE.getVolatile(requesterBufs, id);
 				if (requesterBuf == null) {
+					// Most likely we thought that a packet was lost and sent it again, when in
+					// reality the packet was just slow, so we now have two identical packets
 					warnUnexpectedPacketReceived(response, length, 0);
 					continue;
 				}
