@@ -25,9 +25,12 @@ tasks.compileJava {
 tasks.test {
     useJUnitPlatform()
 
+    failFast = false
+
     maxHeapSize = "1G"
 
     testLogging {
+        showStandardStreams = true
         events("SKIPPED", "FAILED", "STANDARD_OUT", "STANDARD_ERROR")
     }
 

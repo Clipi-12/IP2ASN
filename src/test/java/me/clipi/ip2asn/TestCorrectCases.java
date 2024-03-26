@@ -1,6 +1,5 @@
 package me.clipi.ip2asn;
 
-import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.*;
 
 import java.io.IOException;
@@ -14,10 +13,8 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.Predicate;
-import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
@@ -127,14 +124,26 @@ public class TestCorrectCases {
 		LOGGER.info("Generating AS info for " + ips.lines().count() + " IPs...");
 
 		byte[] stdin =
-			("begin\nprefix\nnoasname\nasnumber\ncountrycode\n" + ips + "\nend\n")
-				.getBytes(StandardCharsets.UTF_8);
+			("begin\r\nnotruncate\r\ncountrycode\r\n\r\n" + ips + "\r\n\r\nend\r\n")
+				.getBytes(StandardCharsets.US_ASCII);
 
 		String output = invokeNetcat("netcat", stdin);
 		if (output == null) output = invokeNetcat("ncat", stdin);
 		if (output == null) throw new IllegalStateException("Install `netcat` or `ncat` to run the tests!");
 
-		output = output.substring(output.indexOf('\n') + 1);
+		output = output.lines()
+					   .parallel()
+					   .skip(1)
+					   .filter(line -> !line.startsWith("NA"))
+					   .collect(Collectors.joining("\n"));
+
+		if (output.contains("Error")) {
+			LOGGER.severe("The following input contained lines that don't represent an IP:\n\n" + ips);
+			throw new IllegalArgumentException("An illegal input caused the output to contain errors:\n\n" +
+											   output.lines()
+													 .filter(line -> line.contains("Error"))
+													 .collect(Collectors.joining("\n")) + "\n\n");
+		}
 
 		LOGGER.info("AS info generated. Caching it...");
 
@@ -155,12 +164,10 @@ public class TestCorrectCases {
 		TestCorrectCases.data = Collections.unmodifiableMap(
 			output.lines()
 				  .parallel()
-				  .unordered()
 				  .distinct()
 				  .map(line -> Arrays.stream(line.split("\\|"))
 									 .map(String::trim)
 									 .toArray(String[]::new))
-				  .filter(info -> !"NA".equals(info[0]))
 				  .collect(Collectors.toMap(
 					  info -> {
 						  try {
@@ -169,12 +176,8 @@ public class TestCorrectCases {
 							  throw new RuntimeException(ex);
 						  }
 					  },
-					  info -> new AS(Integer.parseInt(info[0]), info[3]),
-					  (prevAs, newAs) -> {
-						  if (!Objects.equals(prevAs.countryCode(), newAs.countryCode()))
-							  throw new AssertionError();
-						  return newAs.asn() < prevAs.asn() ? newAs : prevAs;
-					  }
+					  info -> new AS(Integer.parseInt(info[0]), info[2]),
+					  (prevAs, newAs) -> newAs.asn() < prevAs.asn() ? newAs : prevAs
 				  ))
 		);
 	}
@@ -184,25 +187,21 @@ public class TestCorrectCases {
 		LogManager logManager = LogManager.getLogManager();
 		logManager.getLoggerNames().asIterator().forEachRemaining(name -> {
 			Logger logger = logManager.getLogger(name);
-			if (logger == null) return;
-			logger.setLevel(LOG_LEVEL);
-			for (Handler handler : logger.getHandlers()) handler.setLevel(LOG_LEVEL);
+			if (logger != null) logger.setLevel(LOG_LEVEL);
 		});
 	}
 
-	//	@Disabled
 	@TestFactory
 	public Stream<DynamicTest> udpDigWhoisClient() {
 		return testAllFetches("UDP-DIG-WHOIS", ip2asn.fallbackUdp);
 	}
 
-	//	@Disabled
-	//	@TestFactory
-	//	public Stream<DynamicTest> tcpWhoisClient() {
-	//		return testAllFetches("TCP-WHOIS", ip2asn.fallbackTcp);
-	//	}
+	@TestFactory
+	public Stream<DynamicTest> tcpWhoisClient() {
+		return testAllFetches("TCP-WHOIS", ip2asn.fallbackTcp);
+	}
 
-	private Stream<DynamicTest> testAllFetches(String testNamePrefix, @Nullable IIP2ASN ip2asn) {
+	private Stream<DynamicTest> testAllFetches(String testNamePrefix, IIP2ASN ip2asn) {
 		Assertions.assertNotNull(ip2asn);
 
 		return data.entrySet()

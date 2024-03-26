@@ -3,6 +3,7 @@ package me.clipi.ip2asn.provider;
 import me.clipi.ip2asn.AS;
 import me.clipi.ip2asn.IIP2ASN;
 import me.clipi.ip2asn.IP2ASN;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -118,7 +119,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 		socket = new DatagramSocket();
 		socket.setSoTimeout(5_000);
 
-		udpListeners = IntStream.range(0, 3).mapToObj(_idx -> new Thread(() -> {
+		udpListeners = IntStream.range(0, 3).mapToObj(idx -> new Thread(() -> {
 			byte[] response = new byte[THEORETICAL_UDP_LIMIT];
 			DatagramPacket packet = new DatagramPacket(response, response.length);
 
@@ -128,8 +129,10 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				} catch (SocketTimeoutException ignored) {
 					LockSupport.park();
 					continue;
+				} catch (SocketException ex) {
+					if (!isAlive) break;
 				} catch (IOException ex) {
-					LOGGER.log(Level.SEVERE, "Socket exception while receiving data", ex);
+					LOGGER.log(Level.SEVERE, "UDP socket exception while receiving data", ex);
 					continue;
 				}
 				int length = packet.getLength();
@@ -140,7 +143,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				if (requesterBuf == null) {
 					// Most likely we thought that a packet was lost and sent it again, when in
 					// reality the packet was just slow, so we now have two identical packets
-					warnUnexpectedPacketReceived(response, length, 0);
+					Common.warnUnexpectedPacketReceived(LOGGER, response, length, 0);
 					continue;
 				}
 				System.arraycopy(response, 0, requesterBuf, 0, length);
@@ -152,7 +155,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			}
 
 			socket.close();
-		})).toArray(Thread[]::new);
+		}, "UdpDigWhoisClient-UdpListener-" + idx)).toArray(Thread[]::new);
 		for (Thread udpListener : udpListeners)
 			udpListener.start();
 	}
@@ -181,7 +184,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			response[10] == 0 &&
 			response[11] == 0
 		)) {
-			warnUnexpectedPacketReceived(response, length, 1);
+			Common.warnUnexpectedPacketReceived(LOGGER, response, length, 1);
 			return null;
 		}
 
@@ -197,34 +200,32 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			response[offset + 2] == 0 &&
 			response[offset + 3] == 1
 		)) {
-			warnUnexpectedPacketReceived(response, length, 2);
+			Common.warnUnexpectedPacketReceived(LOGGER, response, length, 2);
 			return null;
 		}
 
-		int[] asn_cidrMask_offset_asCcOffset_asCcLen = { 0, 0, offset + 4, 0, 0 };
+		int[] offset_asn_cidrMask_asCcOffset_asCcLen = { offset + 4, 0, 0, 0, 0 };
 		for (int i = 0; i < ANCOUNT; ++i) {
-			if (!readTxtAnswer(response, length, asn_cidrMask_offset_asCcOffset_asCcLen))
+			if (!readTxtAnswer(response, length, offset_asn_cidrMask_asCcOffset_asCcLen))
 				return null;
 		}
-		if (asn_cidrMask_offset_asCcOffset_asCcLen[2] != length) {
-			warnUnexpectedPacketReceived(response, length, 8);
+		if (offset_asn_cidrMask_asCcOffset_asCcLen[0] != length) {
+			Common.warnUnexpectedPacketReceived(LOGGER, response, length, 8);
 			return null;
 		}
 		String asCountryCode = new String(
-			// TODO Is it really UTF-8? In that case, the check of ISO-3166 should not
-			//  refer to countryCodeResponseLen (byte length), but the char-length
-			response, asn_cidrMask_offset_asCcOffset_asCcLen[3], asn_cidrMask_offset_asCcOffset_asCcLen[4],
-			StandardCharsets.UTF_8);
+			response, offset_asn_cidrMask_asCcOffset_asCcLen[3], offset_asn_cidrMask_asCcOffset_asCcLen[4],
+			StandardCharsets.US_ASCII);
 
-		return new AS(asn_cidrMask_offset_asCcOffset_asCcLen[0], asCountryCode);
+		return new AS(offset_asn_cidrMask_asCcOffset_asCcLen[1], asCountryCode);
 	}
 
 	private static int shortFromBytes(byte high, byte low) {
 		return ((high & 0xFF) << 8) | (low & 0xFF);
 	}
 
-	private static boolean readTxtAnswer(byte[] response, int length, int[] asn_cidrMask_offset_asCcOffset_asCcLen) {
-		int offset = asn_cidrMask_offset_asCcOffset_asCcLen[2];
+	private static boolean readTxtAnswer(byte[] response, int length, int[] offset_asn_cidrMask_asCcOffset_asCcLen) {
+		int offset = offset_asn_cidrMask_asCcOffset_asCcLen[0];
 		try {
 			while (offset < length) {
 				int resHigh = response[offset++] & 0xFF;
@@ -235,7 +236,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 					continue;
 				}
 				if (res2MSB < 3) {
-					warnUnexpectedPacketReceived(response, length, 3);
+					Common.warnUnexpectedPacketReceived(LOGGER, response, length, 3);
 					return false;
 				}
 				// Skip low octet of message compression
@@ -251,33 +252,42 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				response[offset + 2] == 0 &&
 				response[offset + 3] == 1
 			)) {
-				warnUnexpectedPacketReceived(response, length, 4);
+				Common.warnUnexpectedPacketReceived(LOGGER, response, length, 4);
 				return false;
 			}
 			offset += 10;
 			int textLength = shortFromBytes(response[offset - 2], response[offset - 1]);
 			final int endOfAnswer = offset + textLength;
+			if (endOfAnswer > length) {
+				Common.warnUnexpectedPacketReceived(LOGGER, response, length, 5);
+				return false;
+			}
 			if ((response[offset++] & 0xFF) + 1 != textLength) {
-				warnUnexpectedPacketReceived(response, length, 5);
+				Common.warnUnexpectedPacketReceived(LOGGER, response, length, 5);
 				return false;
 			}
 
-			asn_cidrMask_offset_asCcOffset_asCcLen[2] = offset;
-			long asn = readShortUntilPipe(response, length, asn_cidrMask_offset_asCcOffset_asCcLen, 0);
-			if (asn == -1) return false;
-			asn &= 0xFFFF_FFFFL;
-			offset = asn_cidrMask_offset_asCcOffset_asCcLen[2];
+			offset_asn_cidrMask_asCcOffset_asCcLen[0] = offset;
+			int asn;
+			{
+				long asn0 = Common.readIntUntilPipe(response, length, offset_asn_cidrMask_asCcOffset_asCcLen, 0,
+													LOGGER);
+				if (asn0 < 0) return false;
+				asn = (int) asn0;
+			}
+			offset = offset_asn_cidrMask_asCcOffset_asCcLen[0];
 
 			final int ipResponseOffset = offset;
 			// noinspection StatementWithEmptyBody
 			while (response[offset++] != '/') {
 			}
-			asn_cidrMask_offset_asCcOffset_asCcLen[2] = offset;
-			long cidrMask = readShortUntilPipe(response, length, asn_cidrMask_offset_asCcOffset_asCcLen, -1);
-			if (cidrMask == -1) return false;
+			offset_asn_cidrMask_asCcOffset_asCcLen[0] = offset;
+			long cidrMask = Common.readIntUntilPipe(response, length, offset_asn_cidrMask_asCcOffset_asCcLen, -1,
+													LOGGER);
+			if (cidrMask < 0) return false;
 			final int ipResponseLen = offset - ipResponseOffset + (int) (cidrMask >>> 32);
 			cidrMask &= 0xFFFF_FFFFL;
-			offset = asn_cidrMask_offset_asCcOffset_asCcLen[2];
+			offset = offset_asn_cidrMask_asCcOffset_asCcLen[0];
 
 			final int countryCodeResponseOffset = offset;
 			while (response[offset] != ' ' && response[offset] != '|') ++offset;
@@ -288,90 +298,31 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			final Level logLevel = Level.FINE;
 			if (LOGGER.isLoggable(logLevel)) LOGGER.log(
 				logLevel, "DNS response of IP->ASN (" + new String(
-					// TODO Is it really UTF-8?
-					response, ipResponseOffset, ipResponseLen, StandardCharsets.UTF_8) + " -> " + asn + ")");
+					response, ipResponseOffset, ipResponseLen, StandardCharsets.US_ASCII) + " -> " + asn + ")");
 
-			final int prevCidrMask = asn_cidrMask_offset_asCcOffset_asCcLen[1];
+			final int prevCidrMask = offset_asn_cidrMask_asCcOffset_asCcLen[2];
 			if (cidrMask > prevCidrMask) {
-				asn_cidrMask_offset_asCcOffset_asCcLen[0] = (int) asn;
-				asn_cidrMask_offset_asCcOffset_asCcLen[1] = (int) cidrMask;
-				asn_cidrMask_offset_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
-				asn_cidrMask_offset_asCcOffset_asCcLen[4] = countryCodeResponseLen;
-			} else if (cidrMask == prevCidrMask && asn < asn_cidrMask_offset_asCcOffset_asCcLen[0]) {
+				offset_asn_cidrMask_asCcOffset_asCcLen[1] = asn;
+				offset_asn_cidrMask_asCcOffset_asCcLen[2] = (int) cidrMask;
+				offset_asn_cidrMask_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
+				offset_asn_cidrMask_asCcOffset_asCcLen[4] = countryCodeResponseLen;
+			} else if (cidrMask == prevCidrMask && asn < offset_asn_cidrMask_asCcOffset_asCcLen[0]) {
 				// If an ip has multiple ASNs associated with it (which should be impossible,
 				// but in reality it may occur), just set the info associated with the lowest ASN
-				asn_cidrMask_offset_asCcOffset_asCcLen[0] = (int) asn;
-				asn_cidrMask_offset_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
-				asn_cidrMask_offset_asCcOffset_asCcLen[4] = countryCodeResponseLen;
+				offset_asn_cidrMask_asCcOffset_asCcLen[1] = asn;
+				offset_asn_cidrMask_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
+				offset_asn_cidrMask_asCcOffset_asCcLen[4] = countryCodeResponseLen;
 			}
 
 			offset = endOfAnswer;
 			return true;
 		} finally {
-			asn_cidrMask_offset_asCcOffset_asCcLen[2] = offset;
+			offset_asn_cidrMask_asCcOffset_asCcLen[0] = offset;
 		}
-	}
-
-	private static long readShortUntilPipe(byte[] response, int length, int[] asn_cidrMask_offset, int recursion) {
-		int offset = asn_cidrMask_offset[2];
-		int numByteLength = 0;
-		int num = 0;
-		do {
-			int digit = response[offset++] & 0xFF;
-			if (digit == '|') break;
-			if (digit == ' ') {
-				final int firstSpace = offset - 1;
-				while (response[offset] == ' ') ++offset;
-				if (response[offset] == '|') {
-					++offset;
-					break;
-				}
-				// If an ip has multiple ASNs associated with it (which should be impossible,
-				// but in reality it may occur), just return the lowest ASN
-				if (response[offset] >= '0' && response[offset] <= '9' && recursion >= 0 && recursion < 5) {
-					asn_cidrMask_offset[2] = offset;
-					long next = readShortUntilPipe(response, length, asn_cidrMask_offset, recursion + 1);
-					numByteLength += (int) (next >>> 32) + offset - firstSpace;
-					next &= 0xFFFF_FFFFL;
-					return ((long) numByteLength << 32) | (num < next ? num : next);
-				}
-				warnUnexpectedPacketReceived(response, length, 7);
-				return -1;
-			}
-			digit -= '0';
-			if (digit < 0 || digit > 9) {
-				warnUnexpectedPacketReceived(response, length, 6);
-				return -1;
-			}
-			num *= 10;
-			num += digit;
-			++numByteLength;
-		} while (true);
-		while (response[offset] == ' ') ++offset;
-		asn_cidrMask_offset[2] = offset;
-		return ((long) numByteLength << 32) | num;
-	}
-
-	private static void warnUnexpectedPacketReceived(byte[] response, int length, int errno) {
-		StringBuilder b = new StringBuilder("Received unexpected message (will get ignored, errno=")
-			.append(errno)
-			.append("): ");
-
-		if (length == 0) {
-			b.append("[]");
-		} else {
-			b.ensureCapacity(b.capacity() + 2 + 6 * length);
-			b.append('[');
-			int last = length - 1;
-			for (int i = 0; i < last; ++i) b.append(response[i]).append(", ");
-			b.append(response[last]).append(']');
-		}
-
-		LOGGER.warning(b.toString());
 	}
 
 	@Override
-	public @Nullable AS ip2asn(InetAddress ip) {
+	public @Nullable AS ip2asn(@NotNull InetAddress ip) {
 		byte[] ipAddress = ip.getAddress();
 		boolean isIPV6 = ip instanceof Inet6Address;
 		int whoisHostOffset = 12 + (isIPV6 ? 64 : ipv4EncodingLength(ipAddress));
@@ -422,7 +373,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			try {
 				socket.send(udpPacket);
 			} catch (IOException ex) {
-				LOGGER.log(Level.SEVERE, "Socket exception while sending data", ex);
+				LOGGER.log(Level.SEVERE, "UDP socket exception while sending data", ex);
 				continue;
 			}
 
