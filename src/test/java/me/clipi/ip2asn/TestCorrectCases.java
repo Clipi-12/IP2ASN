@@ -28,6 +28,7 @@ public class TestCorrectCases {
 	private static final Logger LOGGER = Logger.getLogger("Tests.CorrectCases");
 
 	private static Map<InetAddress, AS> data;
+	// TODO 2.5 segs for UDP is ok, but maybe not for TCP in bulk
 	private static final IP2ASN ip2asn = new IP2ASN(2_500);
 	private static final Level LOG_LEVEL = Level.parse(System.getProperty("me.clipi.testing.log_level", "INFO"));
 
@@ -108,7 +109,7 @@ public class TestCorrectCases {
 
 		LOGGER.info("Could not find cached values of testing resources. Downloading input for them...");
 
-		final int RANDOM_LINES = 3_000;
+		final int RANDOM_LINES = 30_000;
 		String[] ipv4 = getRandomLines(
 			fetch("https://github.com/T145/black-mirror/releases/download/latest/BLOCK_IPV4.txt"), RANDOM_LINES);
 		String[] ipv6 = getRandomLines(

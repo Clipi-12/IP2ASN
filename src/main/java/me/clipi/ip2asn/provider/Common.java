@@ -3,6 +3,8 @@ package me.clipi.ip2asn.provider;
 import java.nio.charset.StandardCharsets;
 import java.util.logging.Logger;
 
+import static me.clipi.ip2asn.provider.Errno.*;
+
 class Common {
 	private Common() {
 	}
@@ -28,10 +30,11 @@ class Common {
 		LOGGER.warning(b.toString());
 	}
 
-	static int skipUntilPastFirst(byte[] arr, int offset, int len, char limit, int errno, Logger LOGGER) {
+	static int skipUntilPastFirst(byte[] arr, int offset, int available, int length, char limit, int errno,
+								  Logger LOGGER) {
 		do {
-			if (offset >= len) {
-				Common.warnUnexpectedPacketReceived(LOGGER, arr, arr.length >= 0x0F_FF ? len : arr.length, errno);
+			if (offset >= available) {
+				Common.warnUnexpectedPacketReceived(LOGGER, arr, length, errno);
 				return -1;
 			}
 		} while (arr[offset++] != limit);
@@ -39,10 +42,11 @@ class Common {
 		return offset;
 	}
 
-	static int skipUntilCurrentIs(byte[] arr, int offset, int len, char limit, int errno, Logger LOGGER) {
+	static int skipUntilCurrentIs(byte[] arr, int offset, int available, int length, char limit, int errno,
+								  Logger LOGGER) {
 		do {
-			if (offset >= len) {
-				Common.warnUnexpectedPacketReceived(LOGGER, arr, arr.length >= 0x0F_FF ? len : arr.length, errno);
+			if (offset >= available) {
+				Common.warnUnexpectedPacketReceived(LOGGER, arr, length, errno);
 				return -1;
 			}
 			if (arr[offset] == limit) break;
@@ -52,10 +56,10 @@ class Common {
 		return offset;
 	}
 
-	static int skipUntilNoMoreSpace(byte[] arr, int offset, int len, int errno, Logger LOGGER) {
+	static int skipUntilNoMoreSpace(byte[] arr, int offset, int available, int length, int errno, Logger LOGGER) {
 		do {
-			if (offset >= len) {
-				Common.warnUnexpectedPacketReceived(LOGGER, arr, arr.length >= 0x0F_FF ? len : arr.length, errno);
+			if (offset >= available) {
+				Common.warnUnexpectedPacketReceived(LOGGER, arr, length, errno);
 				return -1;
 			}
 			if (arr[offset] != ' ') break;
@@ -65,23 +69,23 @@ class Common {
 		return offset;
 	}
 
-	static long readIntUntilPipe(byte[] response, int length, int[] offset, int recursion,
+	static long readIntUntilPipe(byte[] response, int available, int length, int[] offset, int recursion,
 								 Logger LOGGER) {
 		int offset0 = offset[0];
 		int numByteLength = 0;
 		int num = 0;
 		do {
-			if (offset0 >= length) {
-				warnUnexpectedPacketReceived(LOGGER, response, length, 7);
+			if (offset0 >= available) {
+				warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_NUM_OOB);
 				return -1;
 			}
 			int digit = response[offset0++] & 0xFF;
 			if (digit == '|') break;
 			if (digit == ' ') {
 				final int firstSpace = offset0 - 1;
-				while (offset0 < length && response[offset0] == ' ') ++offset0;
-				if (offset0 >= length) {
-					warnUnexpectedPacketReceived(LOGGER, response, length, 7);
+				while (offset0 < available && response[offset0] == ' ') ++offset0;
+				if (offset0 >= available) {
+					warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_END_OOB);
 					return -1;
 				}
 				if (response[offset0] == '|') {
@@ -90,27 +94,31 @@ class Common {
 				}
 				// If an ip has multiple ASNs associated with it (which should be impossible,
 				// but in reality it may occur), just return the lowest ASN
-				if (response[offset0] >= '0' && response[offset0] <= '9' && recursion >= 0 && recursion < 5) {
-					offset[0] = offset0;
-					long next = readIntUntilPipe(response, length, offset, recursion + 1, LOGGER);
-					if (next < 0) return -1;
-					numByteLength += (int) (next >>> 32) + offset0 - firstSpace;
-					next &= 0xFFFF_FFFFL;
-					return ((long) numByteLength << 32) | (num < next ? num : next);
+				if (response[offset0] >= '0' && response[offset0] <= '9') {
+					if (recursion >= 0 && recursion < 5) {
+						offset[0] = offset0;
+						long next = readIntUntilPipe(response, available, length, offset, recursion + 1, LOGGER);
+						if (next < 0) return -1;
+						numByteLength += (int) (next >>> 32) + offset0 - firstSpace;
+						next &= 0xFFFF_FFFFL;
+						return ((long) numByteLength << 32) | (num < next ? num : next);
+					}
+					warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_TOO_MUCH_RECURSION);
+					return -1;
 				}
-				warnUnexpectedPacketReceived(LOGGER, response, length, 7);
+				warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_UNEXPECTED_AFTER_SPACE);
 				return -1;
 			}
 			digit -= '0';
 			if (digit < 0 || digit > 9) {
-				warnUnexpectedPacketReceived(LOGGER, response, length, 6);
+				warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_NOT_DIGIT);
 				return -1;
 			}
 			num *= 10;
 			num += digit;
 			++numByteLength;
 		} while (true);
-		while (offset0 < length && response[offset0] == ' ') ++offset0;
+		while (offset0 < available && response[offset0] == ' ') ++offset0;
 		offset[0] = offset0;
 		return ((long) numByteLength << 32) | num;
 	}

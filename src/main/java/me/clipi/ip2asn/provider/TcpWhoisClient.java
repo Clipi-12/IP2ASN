@@ -22,6 +22,8 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import static me.clipi.ip2asn.provider.Errno.*;
+
 public class TcpWhoisClient implements IIP2ASN {
 	private static final Logger LOGGER;
 
@@ -216,12 +218,21 @@ public class TcpWhoisClient implements IIP2ASN {
 				// TODO set maximum size (i.e. ensure the response fits in an array, as arr.length has to be positive)
 				byte[] bulkResponses = fromServer.readAllBytes();
 
-				int resOff = Common.skipUntilPastFirst(bulkResponses, 0, bulkResponses.length, '\n', 1, LOGGER);
+				int resOff = Common.skipUntilPastFirst(bulkResponses, 0, bulkResponses.length, bulkResponses.length,
+													   '\n', TCP_EXPECTED_BULK_MESSAGE, LOGGER);
 				if (resOff < 0) return;
 
 				int i = start;
 				final int[] offset_prevIpOff_prevIpEnd = { resOff, 0, MAX_SIZEOF_IPV6_BYTES };
 				while (i < end) {
+					{
+						byte[] requester = (byte[]) BYTE_ARR_HANDLE.compareAndExchange(buf, i, REQUEST_RESERVED, null);
+						if (requester == REQUEST_RESERVED || requester == null) {
+							++i;
+							continue;
+						}
+					}
+
 					final int singleResOffset = offset_prevIpOff_prevIpEnd[0];
 					byte processedCorrectly = readSingleResponse(bulkResponses, offset_prevIpOff_prevIpEnd);
 					if (processedCorrectly < 0) return;
@@ -236,9 +247,9 @@ public class TcpWhoisClient implements IIP2ASN {
 								LockSupport.unpark(requesters[i]);
 								break;
 							}
-							BYTE_ARR_HANDLE.set(buf, i, null);
-							if (requester == REQUEST_RESERVED || requester == null) continue;
+							if (requester == null) continue;
 							assert requester == REQUEST_UNWANTED;
+							BYTE_ARR_HANDLE.set(buf, i, null);
 							break;
 						} while (++i < end);
 						++i;
@@ -254,7 +265,8 @@ public class TcpWhoisClient implements IIP2ASN {
 					byte processedCorrectly = readSingleResponse(bulkResponses, offset_prevIpOff_prevIpEnd);
 					if (processedCorrectly < 0) return;
 					if (processedCorrectly > 0) {
-						Common.warnUnexpectedPacketReceived(LOGGER, bulkResponses, bulkResponses.length, 0);
+						Common.warnUnexpectedPacketReceived(LOGGER, bulkResponses, bulkResponses.length,
+															TCP_EXPECTED_END_OF_PACKET);
 						return;
 					}
 				} while (true);
@@ -267,7 +279,7 @@ public class TcpWhoisClient implements IIP2ASN {
 	private byte readSingleResponse(byte[] bulkResponses, int[] offset_prevIpOff_prevIpEnd) {
 		int offset = offset_prevIpOff_prevIpEnd[0];
 		final int endOfSingleRes = Common.skipUntilPastFirst(
-			bulkResponses, offset, bulkResponses.length, '\n', 2, LOGGER);
+			bulkResponses, offset, bulkResponses.length, bulkResponses.length, '\n', TCP_NO_LF_FOUND, LOGGER);
 		if (endOfSingleRes < 0) return -1;
 		offset_prevIpOff_prevIpEnd[0] = endOfSingleRes;
 
@@ -280,13 +292,13 @@ public class TcpWhoisClient implements IIP2ASN {
 			bulkResponses[offset + 3] == 'o' &&
 			bulkResponses[offset + 4] == 'r'
 		)) {
-			offset = Common.skipUntilPastFirst(bulkResponses, offset, endOfSingleRes, '|', 3,
-											   LOGGER);
+			offset = Common.skipUntilPastFirst(bulkResponses, offset, endOfSingleRes, bulkResponses.length, '|',
+											   TCP_NO_SEPARATOR_FROM_ASN_TO_IP, LOGGER);
 			if (offset < 0) return -1;
-
 			while (offset < endOfSingleRes && bulkResponses[offset] == ' ') ++offset;
 			if (offset == endOfSingleRes) {
-				Common.warnUnexpectedPacketReceived(LOGGER, bulkResponses, bulkResponses.length, 4);
+				Common.warnUnexpectedPacketReceived(LOGGER, bulkResponses, bulkResponses.length,
+													TCP_NO_SEPARATOR_FROM_ASN_TO_IP);
 				return -1;
 			}
 
@@ -294,7 +306,8 @@ public class TcpWhoisClient implements IIP2ASN {
 			while (offset < endOfSingleRes && bulkResponses[offset] != ' ' && bulkResponses[offset] != '|')
 				++offset;
 			if (offset == endOfSingleRes) {
-				Common.warnUnexpectedPacketReceived(LOGGER, bulkResponses, endOfSingleRes, 5);
+				Common.warnUnexpectedPacketReceived(LOGGER, bulkResponses, endOfSingleRes,
+													TCP_NO_SEPARATOR_FROM_IP_TO_CC);
 				return -1;
 			}
 
@@ -367,24 +380,35 @@ public class TcpWhoisClient implements IIP2ASN {
 		// TODO Should we retry on timeout?
 		if (response == null) return null;
 
+		if (4 < response.length &&
+			response[0] == 'E' &&
+			response[1] == 'r' &&
+			response[2] == 'r' &&
+			response[3] == 'o' &&
+			response[4] == 'r'
+		) {
+			LOGGER.severe("An invalid input was sent to the server!\nRequest ip: " + ip.getHostAddress() +
+						  "\"Whole response: " + Arrays.toString(response) + "\n\"" +
+						  new String(response, StandardCharsets.US_ASCII) + '"');
+			// TODO Should we retry? We are not logging a warning, we are logging a severe message, as this is
+			//  way worse than the server being non-compliant in some aspects
+			return null;
+		}
+
 		int offset;
 		int asn;
 		{
 			int[] offset0 = { 0 };
-			long asn0 = Common.readIntUntilPipe(response, response.length, offset0, -1, LOGGER);
+			long asn0 = Common.readIntUntilPipe(response, response.length, response.length, offset0, -1, LOGGER);
 			if (asn0 < 0) return null;
 			asn = (int) asn0;
 			offset = offset0[0];
 		}
 
-
-		offset = Common.skipUntilNoMoreSpace(response, offset, response.length, 8, LOGGER);
-		if (offset < 0) return null;
-
 		final int startOfIp = offset;
 		while (offset < response.length && response[offset] != ' ' && response[offset] != '|') ++offset;
 		if (offset == response.length) {
-			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, 9);
+			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, TCP_NO_SEPARATOR_FROM_IP_TO_CC);
 			return null;
 		}
 
@@ -399,9 +423,11 @@ public class TcpWhoisClient implements IIP2ASN {
 		}
 
 		// We cannot merge the following operations (skip '|' & skip ' ') because the CC may be ""
-		offset = Common.skipUntilPastFirst(response, offset, response.length, '|', 10, LOGGER);
+		offset = Common.skipUntilPastFirst(response, offset, response.length, response.length, '|',
+										   TCP_NO_SEPARATOR_FROM_IP_TO_CC, LOGGER);
 		if (offset < 0) return null;
-		offset = Common.skipUntilNoMoreSpace(response, offset, response.length, 11, LOGGER);
+		offset = Common.skipUntilNoMoreSpace(response, offset, response.length, response.length,
+											 TCP_NO_SEPARATOR_FROM_IP_TO_CC, LOGGER);
 		if (offset < 0) return null;
 
 
@@ -411,14 +437,15 @@ public class TcpWhoisClient implements IIP2ASN {
 			// The country code is ""
 			lenOfCC = 0;
 		} else {
-			offset = Common.skipUntilCurrentIs(response, offset, response.length, ' ', 12, LOGGER);
+			offset = Common.skipUntilCurrentIs(response, offset, response.length, response.length, ' ',
+											   TCP_EXPECTED_CC, LOGGER);
 			if (offset < 0) return null;
 			lenOfCC = offset - startOfCC;
 		}
 
 		while (offset < response.length && (response[offset] == ' ' || response[offset] == '|')) ++offset;
 		if (offset == response.length) {
-			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, 13);
+			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, TCP_NO_SEPARATOR_FROM_CC_TO_ASNAME);
 			return null;
 		}
 
@@ -426,10 +453,10 @@ public class TcpWhoisClient implements IIP2ASN {
 		while (offset < response.length && response[offset] != '\r' && response[offset] != '\n' && response[offset] != '|')
 			++offset;
 		if (response.length == offset) {
-			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, 14);
+			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, TCP_EXPECTED_END_OF_RESPONSE);
 			return null;
 		} else if (response[offset] == '|') {
-			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, 15);
+			Common.warnUnexpectedPacketReceived(LOGGER, response, response.length, TCP_UNEXPECTED_ADDITIONAL_FIELD);
 			return null;
 		}
 
