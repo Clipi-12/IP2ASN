@@ -90,18 +90,20 @@ public class TcpWhoisClient implements IIP2ASN {
 					currId = requestId.get();
 					startId = currId & ~REQUEST_BULK_SIZE_M1;
 					if (startId == currId) continue periodic_flush;
+					startId &= TOTAL_REQUESTERS_M1;
+					// Don't take the mod of nextBlock and TOTAL_REQUESTERS! It should always be bigger than startId
 					nextBlock = startId + REQUEST_BULK_SIZE;
 					// Set +1 because otherwise the next request would call flushRequests on "the previous bulk
 					// buffer" (i.e. the buffer that we are going to flush right now)
 					newId = (nextBlock | 1) & TOTAL_REQUESTERS_M1;
 				} while (!requestId.compareAndSet(currId, newId));
 				flushRequests(
-					startId & TOTAL_REQUESTERS_M1,
+					startId,
 					// Unfortunately we cannot flush according to the last used ID, but to the end of the block,
 					// because if the compareAndSet in this::request that is responsible for avoiding "bulk-buffers"
 					// that are being processed depends on the buffer being null at that ID. Therefore, we have to
 					// ensure all the "bulk-buffer" is covered for this::flushRequests
-					nextBlock & TOTAL_REQUESTERS_M1 /* currId & TOTAL_REQUESTERS_M1 */
+					/* currId */ nextBlock
 				);
 			}
 		}, "TcpWhoisClient-PeriodicFlusher");
@@ -332,6 +334,8 @@ public class TcpWhoisClient implements IIP2ASN {
 		int id;
 		Thread t = Thread.currentThread();
 		do {
+			// We have to wrap-around TOTAL_REQUESTERS, as the only place
+			// were we reset the id to 0 is in the periodic flusher
 			id = requestId.getAndIncrement() & TOTAL_REQUESTERS_M1;
 			if ((id & REQUEST_BULK_SIZE_M1) == 0) {
 				int end = id != 0 ? id : TOTAL_REQUESTERS;

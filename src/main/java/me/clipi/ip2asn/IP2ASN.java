@@ -29,6 +29,7 @@ public class IP2ASN implements IIP2ASN {
 	public final TcpWhoisClient fallbackTcp;
 
 	public IP2ASN() {
+		// TODO Change default
 		this(1_750);
 	}
 
@@ -42,11 +43,15 @@ public class IP2ASN implements IIP2ASN {
 	}
 
 	public IP2ASN(long timeoutMillis) {
+		this(timeoutMillis, timeoutMillis);
+	}
+
+	public IP2ASN(long updPacketLossTimeoutMillis, long tcpTimeoutMillis) {
 		fallbackUdp = UdpDigWhoisClient.createOrNull(
 			hardcoded(8, 8, 8, 8),
 			hardcoded(1, 1, 1, 1),
 			"origin.asn.cymru.com", "origin6.asn.cymru.com", 53,
-			timeoutMillis);
+			updPacketLossTimeoutMillis);
 
 		{
 			InetAddress whoisTcp;
@@ -57,17 +62,27 @@ public class IP2ASN implements IIP2ASN {
 				// Just in case the DNS lookup fails, don't force the program to crash...
 				whoisTcp = hardcoded(216, 31, 12, 15);
 			}
-			fallbackTcp = new TcpWhoisClient(whoisTcp, 43, timeoutMillis);
+			fallbackTcp = new TcpWhoisClient(whoisTcp, 43, tcpTimeoutMillis);
 		}
 	}
 
-
+	@Override
 	@Nullable
-	public AS ip2asn(@NotNull InetAddress ip) {
-		// TODO Hay más ips que no tienen ASN (eg 0.0.0.0, 127.x.x.x)
-		if (ip.isSiteLocalAddress()) return null;
-		if (fallbackUdp != null) return fallbackUdp.ip2asn(ip);
-		if (fallbackTcp != null) return fallbackTcp.ip2asn(ip);
+	public AS v4ip2asn(byte @NotNull [] ip) {
+		if (IIP2ASN.ipv4CannotHaveAS(ip)) return AS.NULL_AS;
+
+		if (fallbackUdp != null) return fallbackUdp.v4ip2asn(ip);
+		if (fallbackTcp != null) return fallbackTcp.v4ip2asn(ip);
+		return null;
+	}
+
+	@Override
+	@Nullable
+	public AS v6ip2asn(byte @NotNull [] ip) {
+		if (IIP2ASN.ipv6CannotHaveAS(ip)) return AS.NULL_AS;
+
+		if (fallbackUdp != null) return fallbackUdp.v6ip2asn(ip);
+		if (fallbackTcp != null) return fallbackTcp.v6ip2asn(ip);
 		return null;
 	}
 }
