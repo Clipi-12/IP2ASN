@@ -69,11 +69,11 @@ class Common {
 		return offset;
 	}
 
-	static long readIntUntilPipe(byte[] response, int available, int length, int[] offset, int recursion,
-								 Logger LOGGER) {
+	static long readIntUntilPipe(byte[] response, int available, int length, int[] offset,
+								 int maxExtraSpaceSeparatedNums, Logger LOGGER) {
 		int offset0 = offset[0];
 		int numByteLength = 0;
-		int num = 0;
+		long num = 0;
 		do {
 			if (offset0 >= available) {
 				warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_NUM_OOB);
@@ -95,13 +95,14 @@ class Common {
 				// If an ip has multiple ASNs associated with it (which should be impossible,
 				// but in reality it may occur), just return the lowest ASN
 				if (response[offset0] >= '0' && response[offset0] <= '9') {
-					if (recursion >= 0 && recursion < 5) {
+					if (maxExtraSpaceSeparatedNums > 0) {
 						offset[0] = offset0;
-						long next = readIntUntilPipe(response, available, length, offset, recursion + 1, LOGGER);
+						long next = readIntUntilPipe(response, available, length, offset,
+													 maxExtraSpaceSeparatedNums - 1,
+													 LOGGER);
 						if (next < 0) return -1;
 						numByteLength += (int) (next >>> 32) + offset0 - firstSpace;
-						next &= 0xFFFF_FFFFL;
-						return ((long) numByteLength << 32) | (num < next ? num : next);
+						return ((long) numByteLength << 32) | (num < next ? num : (int) next);
 					}
 					warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_TOO_MUCH_RECURSION);
 					return -1;
@@ -117,9 +118,13 @@ class Common {
 			num *= 10;
 			num += digit;
 			++numByteLength;
+			if (num > 0xFFFF_FFFFL) {
+				warnUnexpectedPacketReceived(LOGGER, response, length, COMMON_READ_UNTIL_PIPE_NUM_DOESNT_FIT_IN_INT);
+				return -1;
+			}
 		} while (true);
 		while (offset0 < available && response[offset0] == ' ') ++offset0;
 		offset[0] = offset0;
-		return ((long) numByteLength << 32) | num;
+		return ((long) numByteLength << 32) | (int) num;
 	}
 }

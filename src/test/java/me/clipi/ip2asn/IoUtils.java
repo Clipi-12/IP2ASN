@@ -26,10 +26,15 @@ public class IoUtils {
 	public static String[] getRandomLines(String input, int n) {
 		String[] lines = input.lines().parallel().unordered().toArray(String[]::new);
 		n = Math.min(n, lines.length);
-		String[] res = new String[n];
 		Random r = new Random();
-		for (int i = 0; i < n; ++i) res[i] = lines[r.nextInt(lines.length)];
-		return res;
+		int start = lines.length - n;
+		for (int i = lines.length - 1; i >= start; --i) {
+			String tmp = lines[i];
+			int idx = r.nextInt(i + 1);
+			lines[i] = lines[idx];
+			lines[idx] = tmp;
+		}
+		return Arrays.copyOfRange(lines, start, lines.length);
 	}
 
 	public static String fetch(String uri) throws IOException {

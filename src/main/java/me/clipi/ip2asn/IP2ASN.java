@@ -29,8 +29,7 @@ public class IP2ASN implements IIP2ASN {
 	public final TcpWhoisClient fallbackTcp;
 
 	public IP2ASN() {
-		// TODO Change default
-		this(1_750);
+		this(2_500, 5_000);
 	}
 
 	@Override
@@ -40,10 +39,6 @@ public class IP2ASN implements IIP2ASN {
 		} finally {
 			if (fallbackUdp != null) fallbackUdp.close();
 		}
-	}
-
-	public IP2ASN(long timeoutMillis) {
-		this(timeoutMillis, timeoutMillis);
 	}
 
 	public IP2ASN(long updPacketLossTimeoutMillis, long tcpTimeoutMillis) {

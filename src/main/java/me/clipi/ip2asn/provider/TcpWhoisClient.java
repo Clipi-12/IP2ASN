@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -123,6 +124,9 @@ public class TcpWhoisClient implements IIP2ASN {
 		try {
 			// noinspection resource
 			socket = new Socket(host, port);
+		} catch (ConnectException ex) {
+			LOGGER.log(Level.SEVERE, "Exception while creating TCP socket (probably a timeout)", ex);
+			return;
 		} catch (IOException ex) {
 			LOGGER.log(Level.SEVERE, "Exception while creating TCP socket", ex);
 			return;
@@ -384,6 +388,11 @@ public class TcpWhoisClient implements IIP2ASN {
 		// TODO Should we retry on timeout?
 		if (response == null) return null;
 
+		if (1 < response.length &&
+			response[0] == 'N' &&
+			response[1] == 'A'
+		) return AS.NULL_AS;
+
 		if (4 < response.length &&
 			response[0] == 'E' &&
 			response[1] == 'r' &&
@@ -403,7 +412,7 @@ public class TcpWhoisClient implements IIP2ASN {
 		int asn;
 		{
 			int[] offset0 = { 0 };
-			long asn0 = Common.readIntUntilPipe(response, response.length, response.length, offset0, -1, LOGGER);
+			long asn0 = Common.readIntUntilPipe(response, response.length, response.length, offset0, 0, LOGGER);
 			if (asn0 < 0) return null;
 			asn = (int) asn0;
 			offset = offset0[0];

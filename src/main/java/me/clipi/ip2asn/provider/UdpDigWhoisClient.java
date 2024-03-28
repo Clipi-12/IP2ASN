@@ -171,7 +171,9 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 
 	private AS decode(final byte[] response) {
 		final int length = shortFromBytes(response[THEORETICAL_UDP_LIMIT - 2], response[THEORETICAL_UDP_LIMIT - 1]);
+
 		final int ANCOUNT = shortFromBytes(response[6], response[7]);
+		if (7 < length && ANCOUNT == 0) return AS.NULL_AS;
 
 		// Assert correct header
 		if (!(
@@ -180,7 +182,6 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			(response[3] & 0b0111_1111) == 0 &&
 			response[4] == 0 &&
 			response[5] == 1 &&
-			ANCOUNT > 0 &&
 			response[8] == 0 &&
 			response[9] == 0 &&
 			response[10] == 0 &&
@@ -276,7 +277,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			int asn;
 			{
 				long asn0 = Common.readIntUntilPipe(response, endOfAnswer, length,
-													offset_asn_cidrMask_asCcOffset_asCcLen, 0, LOGGER);
+													offset_asn_cidrMask_asCcOffset_asCcLen, 4, LOGGER);
 				if (asn0 < 0) return false;
 				asn = (int) asn0;
 			}
@@ -291,7 +292,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			int cidrMask;
 			{
 				long cidrMask0 = Common.readIntUntilPipe(response, endOfAnswer, length,
-														 offset_asn_cidrMask_asCcOffset_asCcLen, -1, LOGGER);
+														 offset_asn_cidrMask_asCcOffset_asCcLen, 0, LOGGER);
 				if (cidrMask0 < 0) return false;
 				ipResponseLen = offset - ipResponseOffset + (int) (cidrMask0 >>> 32);
 				cidrMask = (int) cidrMask0;
