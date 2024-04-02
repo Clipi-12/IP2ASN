@@ -1,6 +1,7 @@
 package me.clipi.ip2asn;
 
 import org.junit.jupiter.api.*;
+import org.opentest4j.AssertionFailedError;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -28,7 +29,7 @@ public class TestCorrectCases {
 	private static final Logger LOGGER = Logger.getLogger("Tests.CorrectCases");
 
 	private static Map<InetAddress, AS> data;
-	private static final IP2ASN ip2asn = new IP2ASN();
+	private static IP2ASN ip2asn;
 	private static final Level LOG_LEVEL = Level.parse(System.getProperty("me.clipi.testing.log_level", "INFO"));
 
 	@AfterAll
@@ -154,6 +155,10 @@ public class TestCorrectCases {
 
 	@BeforeAll
 	public static void prepareData() throws IOException, URISyntaxException, InterruptedException {
+		ip2asn = IP2ASN.createDefault();
+		Assertions.assertNotNull(ip2asn);
+		Assertions.assertEquals(1, ip2asn.fallbacks.length);
+
 		Path resources = createDir("tests", "resources");
 
 		String file = isToString(TestCorrectCases.class.getClassLoader().getResourceAsStream(
@@ -192,13 +197,16 @@ public class TestCorrectCases {
 	}
 
 	@TestFactory
-	public Stream<DynamicTest> udpDigWhoisClient() {
-		return testAllFetches("UDP-DIG-WHOIS", ip2asn.fallbackUdp);
+	public Stream<DynamicTest> testMain() {
+		return testAllFetches(ip2asn.main.getClass().getSimpleName(), ip2asn.main);
 	}
 
 	@TestFactory
-	public Stream<DynamicTest> tcpWhoisClient() {
-		return testAllFetches("TCP-WHOIS", ip2asn.fallbackTcp);
+	public Stream<DynamicTest> testFallback() {
+		Stream<DynamicTest> res = Stream.of();
+		for (IIP2ASN fallback : ip2asn.fallbacks)
+			res = Stream.concat(res, testAllFetches(fallback.getClass().getSimpleName(), fallback));
+		return res;
 	}
 
 	private Stream<DynamicTest> testAllFetches(String testNamePrefix, IIP2ASN ip2asn) {
@@ -207,11 +215,15 @@ public class TestCorrectCases {
 		return data.entrySet()
 				   .parallelStream()
 				   .map(info -> dynamicTest(
-					   testNamePrefix + " test for ip " + info.getKey(),
+					   testNamePrefix + " test for ip " + info.getKey().getHostAddress(),
 					   () -> {
 						   InetAddress ip = info.getKey();
+						   AS expected = info.getValue();
 						   AS fetch = ip2asn.ip2asn(ip);
-						   Assertions.assertEquals(info.getValue(), fetch, ip::toString);
+						   if (!expected.exactMatch(fetch)) throw new AssertionFailedError(
+							   "%s ==> expected: <%s> but was: <%s>".formatted(ip.getHostAddress(), expected, fetch),
+							   expected, fetch
+						   );
 					   })
 				   );
 	}

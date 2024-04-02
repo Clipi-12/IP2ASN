@@ -7,6 +7,10 @@ import org.jetbrains.annotations.Nullable;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.function.BiFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -23,30 +27,25 @@ public class IP2ASN implements IIP2ASN {
 		}
 	}
 
-	@Nullable
-	public final UdpDigWhoisClient fallbackUdp;
-	@Nullable
-	public final TcpWhoisClient fallbackTcp;
+	@NotNull
+	final IIP2ASN main;
 
-	public IP2ASN() {
-		this(2_500, 5_000);
+	final @NotNull IIP2ASN @NotNull [] fallbacks;
+
+	@Nullable
+	public static IP2ASN createDefault() {
+		return createDefault(Duration.ofMillis(2_500), Duration.ofSeconds(5));
 	}
 
-	@Override
-	public void close() {
-		try {
-			if (fallbackTcp != null) fallbackTcp.close();
-		} finally {
-			if (fallbackUdp != null) fallbackUdp.close();
-		}
-	}
+	@Nullable
+	public static IP2ASN createDefault(Duration updPacketLossTimeout, Duration tcpTimeout) {
+		ArrayList<IIP2ASN> list = new ArrayList<>();
 
-	public IP2ASN(long updPacketLossTimeoutMillis, long tcpTimeoutMillis) {
-		fallbackUdp = UdpDigWhoisClient.createOrNull(
+		list.add(UdpDigWhoisClient.createOrNull(
 			hardcoded(8, 8, 8, 8),
 			hardcoded(1, 1, 1, 1),
 			"origin.asn.cymru.com", "origin6.asn.cymru.com", 53,
-			updPacketLossTimeoutMillis);
+			updPacketLossTimeout, LOGGER));
 
 		{
 			InetAddress whoisTcp;
@@ -57,27 +56,49 @@ public class IP2ASN implements IIP2ASN {
 				// Just in case the DNS lookup fails, don't force the program to crash...
 				whoisTcp = hardcoded(216, 31, 12, 15);
 			}
-			fallbackTcp = new TcpWhoisClient(whoisTcp, 43, tcpTimeoutMillis);
+			list.add(new TcpWhoisClient(whoisTcp, 43, tcpTimeout));
 		}
+
+		// noinspection StatementWithEmptyBody
+		while (list.remove(null)) ;
+
+		if (list.isEmpty()) return null;
+		return new IP2ASN(list.get(0), list.subList(1, list.size()).toArray(IIP2ASN[]::new));
+	}
+
+	public IP2ASN(@NotNull IIP2ASN main, @NotNull IIP2ASN @NotNull ... fallbacks) {
+		this.main = main;
+		this.fallbacks = fallbacks;
+	}
+
+	@Override
+	public void close() {
+		main.close();
+		for (IIP2ASN fallback : fallbacks) fallback.close();
 	}
 
 	@Override
 	@Nullable
 	public AS v4ip2asn(byte @NotNull [] ip) {
-		if (IIP2ASN.ipv4CannotHaveAS(ip)) return AS.NULL_AS;
-
-		if (fallbackUdp != null) return fallbackUdp.v4ip2asn(ip);
-		if (fallbackTcp != null) return fallbackTcp.v4ip2asn(ip);
-		return null;
+		return IIP2ASN.ipv4CannotHaveAS(ip) ? AS.NULL_AS : ip2asn(ip, IIP2ASN::v4ip2asn);
 	}
 
 	@Override
 	@Nullable
 	public AS v6ip2asn(byte @NotNull [] ip) {
-		if (IIP2ASN.ipv6CannotHaveAS(ip)) return AS.NULL_AS;
+		return IIP2ASN.ipv6CannotHaveAS(ip) ? AS.NULL_AS : ip2asn(ip, IIP2ASN::v6ip2asn);
+	}
 
-		if (fallbackUdp != null) return fallbackUdp.v6ip2asn(ip);
-		if (fallbackTcp != null) return fallbackTcp.v6ip2asn(ip);
-		return null;
+	private AS ip2asn(byte[] ip, BiFunction<IIP2ASN, byte[], AS> func) {
+		AS res = func.apply(main, ip);
+		if (res == null) {
+			String ip0 = Arrays.toString(ip);
+			for (int i = 0, s = fallbacks.length; res == null && i < s; ++i) {
+				IIP2ASN fallback = fallbacks[i];
+				LOGGER.warning("Falling back to " + fallback.getClass().getSimpleName() + " for ip " + ip0);
+				res = func.apply(fallback, ip);
+			}
+		}
+		return res;
 	}
 }

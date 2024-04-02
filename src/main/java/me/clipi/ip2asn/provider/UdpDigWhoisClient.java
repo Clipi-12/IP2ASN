@@ -11,6 +11,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -78,31 +79,32 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 
 	@Nullable
 	public static UdpDigWhoisClient createOrNull(InetAddress hostDns, String whoisHostV4, String whoisHostV6, int port,
-												 long timeoutMillis) {
-		return createOrNull(hostDns, hostDns, whoisHostV4, whoisHostV6, port, timeoutMillis);
+												 Duration timeout, Logger LOGGER) {
+		return createOrNull(hostDns, hostDns, whoisHostV4, whoisHostV6, port, timeout, LOGGER);
 	}
 
 	@Nullable
 	public static UdpDigWhoisClient createOrNull(InetAddress hostDns, InetAddress fallbackHostDns,
 												 String whoisHostV4, String whoisHostV6, int port,
-												 long timeoutMillis) {
+												 Duration timeout, Logger LOGGER) {
 		return createOrNull(hostDns, fallbackHostDns, domainToLabels(whoisHostV4), domainToLabels(whoisHostV6), port,
-							timeoutMillis);
+							timeout, LOGGER);
 	}
 
 	@Nullable
 	public static UdpDigWhoisClient createOrNull(InetAddress hostDns, byte[] whoisHostV4, byte[] whoisHostV6, int port,
-												 long timeoutMillis) {
-		return createOrNull(hostDns, hostDns, whoisHostV4, whoisHostV6, port, timeoutMillis);
+												 Duration timeout, Logger LOGGER) {
+		return createOrNull(hostDns, hostDns, whoisHostV4, whoisHostV6, port, timeout, LOGGER);
 	}
 
 	@Nullable
 	public static UdpDigWhoisClient createOrNull(InetAddress hostDns, InetAddress fallbackHostDns,
 												 byte[] whoisHostV4, byte[] whoisHostV6, int port,
-												 long timeoutMillis) {
+												 Duration timeout, Logger LOGGER) {
 		try {
-			return new UdpDigWhoisClient(hostDns, fallbackHostDns, whoisHostV4, whoisHostV6, port, timeoutMillis);
+			return new UdpDigWhoisClient(hostDns, fallbackHostDns, whoisHostV4, whoisHostV6, port, timeout);
 		} catch (SocketException ex) {
+			LOGGER.log(Level.SEVERE, "Exception while creating UdpDigWhoisClient", ex);
 			return null;
 		}
 	}
@@ -111,13 +113,13 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 
 	public UdpDigWhoisClient(InetAddress hostDns, InetAddress fallbackHostDns, byte[] whoisHostV4, byte[] whoisHostV6,
 							 int port,
-							 long timeoutMillis) throws SocketException {
+							 Duration timeout) throws SocketException {
 		this.hostDns[1] = hostDns;
 		this.hostDns[0] = fallbackHostDns;
 		this.whoisHostV4 = whoisHostV4;
 		this.whoisHostV6 = whoisHostV6;
 		this.port = port;
-		this.timeoutMillis = timeoutMillis;
+		this.timeoutMillis = timeout.toMillis();
 		socket = new DatagramSocket();
 		socket.setSoTimeout(5_000);
 
@@ -333,6 +335,8 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 
 	@Override
 	public @Nullable AS ip2asn(@NotNull InetAddress ip) {
+		if (!isAlive) return null;
+
 		byte[] ipAddress = ip.getAddress();
 		boolean isIPV6 = ip instanceof Inet6Address;
 		int whoisHostOffset = 12 + (isIPV6 ? 64 : ipv4EncodingLength(ipAddress));
@@ -387,12 +391,12 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				continue;
 			}
 
+			wakeupListeners();
 			if (!isAlive) {
 				requesters[id] = null;
 				requesterBufs[id] = null;
 				return null;
 			}
-			wakeupListeners();
 
 			while ((byte) BYTE_ARR_HANDLE.getVolatile(response, THEORETICAL_UDP_LIMIT) != 0) {
 				// The packet probably got lost

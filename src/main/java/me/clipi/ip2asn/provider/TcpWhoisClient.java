@@ -15,6 +15,7 @@ import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -68,10 +69,10 @@ public class TcpWhoisClient implements IIP2ASN {
 		LockSupport.unpark(periodicFlusher);
 	}
 
-	public TcpWhoisClient(@NotNull InetAddress host, int port, long timeoutMillis) {
+	public TcpWhoisClient(@NotNull InetAddress host, int port, Duration timeout) {
 		this.host = host;
 		this.port = port;
-		this.timeoutMillis = timeoutMillis;
+		this.timeoutMillis = timeout.toMillis();
 		periodicFlusher = new Thread(() -> {
 			periodic_flush:
 			while (isAlive) {
@@ -364,7 +365,7 @@ public class TcpWhoisClient implements IIP2ASN {
 		final long until = System.currentTimeMillis() + timeoutMillis;
 		byte[] result;
 		while ((result = (byte[]) BYTE_ARR_HANDLE.getVolatile(buf, id)) == ip || result == REQUEST_PROCESSING) {
-			if (System.currentTimeMillis() > until) {
+			if (System.currentTimeMillis() > until || !isAlive) {
 				requesters[id] = null;
 				if (BYTE_ARR_HANDLE.compareAndSet(buf, id, ip, REQUEST_UNWANTED)) return null;
 				if (BYTE_ARR_HANDLE.compareAndSet(buf, id, REQUEST_PROCESSING, REQUEST_UNWANTED)) return null;
@@ -382,6 +383,8 @@ public class TcpWhoisClient implements IIP2ASN {
 
 	@Override
 	public AS ip2asn(@NotNull InetAddress ip) {
+		if (!isAlive) return null;
+
 		// TODO Optimize String alloc
 		byte[] ip0 = ip.getHostAddress().getBytes(StandardCharsets.US_ASCII);
 		byte[] response = request(ip0);
