@@ -135,6 +135,7 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 					continue;
 				} catch (SocketException ex) {
 					if (!isAlive) break;
+					LOGGER.log(Level.SEVERE, "UDP socket exception while receiving data", ex);
 				} catch (IOException ex) {
 					LOGGER.log(Level.SEVERE, "UDP socket exception while receiving data", ex);
 					continue;
