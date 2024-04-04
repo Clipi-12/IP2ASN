@@ -21,6 +21,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.IntStream;
 
+import static me.clipi.ip2asn.IP2ExpandedString.*;
 import static me.clipi.ip2asn.provider.Errno.*;
 
 /**
@@ -102,8 +103,8 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 												 byte[] whoisHostV4, byte[] whoisHostV6, int remotePort, int localPort,
 												 Duration timeout, Logger LOGGER) {
 		try {
-			return new UdpDigWhoisClient(hostDns, fallbackHostDns, whoisHostV4, whoisHostV6, remotePort, localPort,
-										 timeout);
+			return new UdpDigWhoisClient(hostDns, fallbackHostDns, whoisHostV4, whoisHostV6,
+										 remotePort, localPort, timeout);
 		} catch (SocketException ex) {
 			LOGGER.log(Level.SEVERE, "Exception while creating UdpDigWhoisClient", ex);
 			return null;
@@ -121,7 +122,8 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 		this.whoisHostV6 = whoisHostV6;
 		this.port = remotePort;
 		this.timeoutMillis = timeout.toMillis();
-		this.socket = new DatagramSocket(localPort);
+		DatagramSocket socket = new DatagramSocket(localPort);
+		this.socket = socket;
 		socket.setSoTimeout(5_000);
 
 		udpListeners = IntStream.range(0, 3).mapToObj(idx -> new Thread(() -> {
@@ -336,14 +338,29 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 	}
 
 	@Override
-	public @Nullable AS ip2asn(@NotNull InetAddress ip) {
-		if (!isAlive) return null;
+	public @Nullable AS v4ip2asn(byte @NotNull [] ipAddress) {
+		assert ipAddress.length == 4;
+		byte[] whoisHost = whoisHostV4;
+		byte[] req = new byte[whoisHost.length + 33];
+		encodeIPv4(ipAddress, req);
+		return ip2asn(req, whoisHost, 28);
+	}
 
-		byte[] ipAddress = ip.getAddress();
-		boolean isIPV6 = ip instanceof Inet6Address;
-		int whoisHostOffset = 12 + (isIPV6 ? 64 : ipv4EncodingLength(ipAddress));
-		byte[] whoisHost = isIPV6 ? whoisHostV6 : whoisHostV4;
-		byte[] req = new byte[whoisHostOffset + whoisHost.length + 5];
+	@Override
+	public @Nullable AS v6ip2asn(byte @NotNull [] ipAddress) {
+		assert ipAddress.length == 16;
+		byte[] whoisHost = whoisHostV6;
+		byte[] req = new byte[whoisHost.length + 81];
+		encodeIPv6(ipAddress, req);
+		return ip2asn(req, whoisHost, 76);
+	}
+
+	/**
+	 * @param whoisHostOffset {@code = 12 + ipEncodingLength(ip)}
+	 * @param req             {@code = new byte[whoisHostOffset + whoisHost.length + 5]}
+	 */
+	private AS ip2asn(byte[] req, byte[] whoisHost, int whoisHostOffset) {
+		if (!isAlive) return null;
 
 		int id = this.id.getAndIncrement() & 0xFFFF;
 		req[0] = (byte) (id >>> 8);
@@ -359,15 +376,8 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 
 		// See https://stackoverflow.com/a/18639042
 		// System.arraycopy(whoisHost, 0, req, whoisHostOffset, whoisHost.length);
-		for (int i = 0, iOffset = whoisHostOffset, s = whoisHost.length; i < s; ++i, ++iOffset)
-			req[iOffset] = whoisHost[i];
-
-		if (isIPV6) {
-			encodeIPv6(ipAddress, req);
-		} else {
-			encodeIPv4(ipAddress, req);
-		}
-
+		for (int i = 0, s = whoisHost.length; i < s; ++i, ++whoisHostOffset)
+			req[whoisHostOffset] = whoisHost[i];
 
 		// Using a ThreadLocal instead of allocating memory is about 15% faster when the array is this big
 		final byte[] response = UdpDigWhoisClient.response.get();
@@ -421,163 +431,32 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 		assert ip.length == 16;
 		for (int i = 15, res = 12; i >= 0; --i, res += 4) {
 			out[res] = 1;
+			out[res + 1] = ipv6Encoding[(ip[i]) & 0xF];
 			out[res + 2] = 1;
-
-			int nibble;
-			nibble = ip[i] & 0xF;
-			out[res + 1] = (byte) (nibble + (nibble >= 10 ? 'a' - 10 : '0'));
-			nibble = (ip[i] >>> 4) & 0xF;
-			out[res + 3] = (byte) (nibble + (nibble >= 10 ? 'a' - 10 : '0'));
+			out[res + 3] = ipv6Encoding[(ip[i] >>> 4) & 0xF];
 		}
-	}
-
-	private static int ipv4EncodingLength(byte[] ip) {
-		assert ip.length == 4;
-		assert ipv4EncodingLengthPerOctet.length == 256;
-		return ipv4EncodingLengthPerOctet[ip[0] & 0xFF] +
-			   ipv4EncodingLengthPerOctet[ip[1] & 0xFF] +
-			   ipv4EncodingLengthPerOctet[ip[2] & 0xFF] +
-			   ipv4EncodingLengthPerOctet[ip[3] & 0xFF] + 4;
 	}
 
 
 	private static void encodeIPv4(byte[] ip, byte[] out) {
 		assert ip.length == 4;
-		assert digitsOnes.length == 256;
-		assert digitsTens.length == 256;
-		assert digitsHundreds.length == 256;
-		for (int i = 3, res = 12; i >= 0; --i) {
-			final int octet = ip[i] & 0xFF;
-			out[res++] = ipv4EncodingLengthPerOctet[octet];
-			if (octet >= 100) out[res++] = digitsHundreds[octet];
-			if (octet >= 10) out[res++] = digitsTens[octet];
-			out[res++] = digitsOnes[octet];
-		}
+
+		final int oc1 = ip[0] & 0xFF, oc2 = ip[1] & 0xFF, oc3 = ip[2] & 0xFF, oc4 = ip[3] & 0xFF;
+		out[12] = 3;
+		out[13] = digitsHundreds[oc4];
+		out[14] = digitsTens[oc4];
+		out[15] = digitsOnes[oc4];
+		out[16] = 3;
+		out[17] = digitsHundreds[oc3];
+		out[18] = digitsTens[oc3];
+		out[19] = digitsOnes[oc3];
+		out[20] = 3;
+		out[21] = digitsHundreds[oc2];
+		out[22] = digitsTens[oc2];
+		out[23] = digitsOnes[oc2];
+		out[24] = 3;
+		out[25] = digitsHundreds[oc1];
+		out[26] = digitsTens[oc1];
+		out[27] = digitsOnes[oc1];
 	}
-
-	private static final byte[] ipv4EncodingLengthPerOctet = {
-		// [0, 9]
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-
-		// [10, 99]
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-		2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-
-		// [100, 255]
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-		3, 3, 3, 3, 3, 3
-	};
-
-	private static final byte[] digitsOnes = {
-		// [0, 255]
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-		'0', '1', '2', '3', '4', '5',
-		};
-	private static final byte[] digitsTens = {
-		// [0, 99]
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'3', '3', '3', '3', '3', '3', '3', '3', '3', '3',
-		'4', '4', '4', '4', '4', '4', '4', '4', '4', '4',
-		'5', '5', '5', '5', '5', '5', '5', '5', '5', '5',
-		'6', '6', '6', '6', '6', '6', '6', '6', '6', '6',
-		'7', '7', '7', '7', '7', '7', '7', '7', '7', '7',
-		'8', '8', '8', '8', '8', '8', '8', '8', '8', '8',
-		'9', '9', '9', '9', '9', '9', '9', '9', '9', '9',
-		// [100, 199]
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'3', '3', '3', '3', '3', '3', '3', '3', '3', '3',
-		'4', '4', '4', '4', '4', '4', '4', '4', '4', '4',
-		'5', '5', '5', '5', '5', '5', '5', '5', '5', '5',
-		'6', '6', '6', '6', '6', '6', '6', '6', '6', '6',
-		'7', '7', '7', '7', '7', '7', '7', '7', '7', '7',
-		'8', '8', '8', '8', '8', '8', '8', '8', '8', '8',
-		'9', '9', '9', '9', '9', '9', '9', '9', '9', '9',
-		// [200, 255]
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'3', '3', '3', '3', '3', '3', '3', '3', '3', '3',
-		'4', '4', '4', '4', '4', '4', '4', '4', '4', '4',
-		'5', '5', '5', '5', '5', '5',
-		};
-	private static final byte[] digitsHundreds = {
-		// [0, 90]
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		'0', '0', '0', '0', '0', '0', '0', '0', '0', '0',
-		// [100, 199]
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		'1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
-		// [200, 255]
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'2', '2', '2', '2', '2', '2', '2', '2', '2', '2',
-		'2', '2', '2', '2', '2', '2',
-		};
 }

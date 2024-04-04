@@ -11,21 +11,30 @@ class Common {
 
 	private static final String WARN_HEAD = "Received unexpected message (part will get ignored, errno=";
 
-	static void warnUnexpectedPacketReceived(Logger LOGGER, byte[] response, int length, int errno) {
-		StringBuilder b = new StringBuilder(WARN_HEAD.length() + 10 + 7 * length);
-		b.append(WARN_HEAD)
-		 .append(errno)
-		 .append("): ");
-
+	static void printBytes(StringBuilder b, byte[] bytes, int length) {
+		b.ensureCapacity(bytes.length * 5 + 2);
 		if (length == 0) {
 			b.append("[]");
 		} else {
 			b.append('[');
 			int last = length - 1;
-			for (int i = 0; i < last; ++i) b.append(response[i]).append(", ");
-			b.append(response[last]).append(']').append('\n');
-			b.append('"').append(new String(response, 0, length, StandardCharsets.US_ASCII)).append('"');
+			for (int i = 0; i < last; ++i) b.append(bytes[i] & 0xFF).append(", ");
+			b.append(bytes[last]).append(']');
 		}
+	}
+
+	static void warnUnexpectedPacketReceived(Logger LOGGER, byte[] response, int length, int errno) {
+		StringBuilder b = new StringBuilder(WARN_HEAD.length() + 10 + 6 * length);
+		b.append(WARN_HEAD)
+		 .append(errno)
+		 .append("): ");
+
+		printBytes(b, response, length);
+		if (response.length > 0) b
+			.append('\n')
+			.append('"')
+			.append(new String(response, 0, length, StandardCharsets.US_ASCII))
+			.append('"');
 
 		LOGGER.warning(b.toString());
 	}

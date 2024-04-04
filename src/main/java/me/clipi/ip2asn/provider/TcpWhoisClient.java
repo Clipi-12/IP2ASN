@@ -3,6 +3,7 @@ package me.clipi.ip2asn.provider;
 import me.clipi.ip2asn.AS;
 import me.clipi.ip2asn.IIP2ASN;
 import me.clipi.ip2asn.IP2ASN;
+import me.clipi.ip2asn.IP2ExpandedString;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -173,7 +174,7 @@ public class TcpWhoisClient implements IIP2ASN {
 		//  socket calls)
 		new Thread(() -> {
 			final byte[][] buf = this.buf;
-			final int MAX_SIZEOF_IPV6_BYTES = 8 * 4 /* 8  4-hex numbers */ + 7 /* 7 ':' */ + 2 /* \r\n */;
+			final int MAX_SIZEOF_IPV6_BYTES = 8 * 4 /* 8 4-hex numbers */ + 7 /* 7 ':' */ + 2 /* \r\n */;
 
 			{
 				// TODO This is 10KB, so IF we reuse the same thread, we should consider putting this in a ThreadLocal
@@ -199,9 +200,16 @@ public class TcpWhoisClient implements IIP2ASN {
 					bulkRequest[reqOff++] = '\n';
 				}
 
-				// TODO If we don't reuse auxIoThread, there is no need for it ot be created at this point, since we
+				// TODO If we don't reuse auxIoThread, there is no need for it to be created at this point, since we
 				//  return here without ever starting it
-				if (reqOff == HEADER.length) return;
+				if (reqOff == HEADER.length) {
+					try {
+						socket.close();
+					} catch (Exception ex) {
+						LOGGER.log(Level.SEVERE, "TCP socket exception while receiving data", ex);
+					}
+					return;
+				}
 				System.arraycopy(FOOTER, 0, bulkRequest, reqOff, FOOTER.length);
 				reqOff += FOOTER.length;
 
@@ -246,6 +254,8 @@ public class TcpWhoisClient implements IIP2ASN {
 					if (processedCorrectly < 0) return;
 
 					if (processedCorrectly > 0) {
+						// TODO Maybe we don't need to copy the array. Maybe we can just use the hole response and
+						//  specify the offset and length. We would still need to worry about volatile access though
 						byte[] singleResponse = Arrays.copyOfRange(bulkResponses, singleResOffset,
 																   offset_prevIpOff_prevIpEnd[0]);
 						do {
@@ -383,12 +393,25 @@ public class TcpWhoisClient implements IIP2ASN {
 	}
 
 	@Override
-	public AS ip2asn(@NotNull InetAddress ip) {
+	public @Nullable AS v4ip2asn(byte @NotNull [] ip) {
+		assert ip.length == 4;
+		byte[] ipAsStr = new byte[IP2ExpandedString.ipv4StringLength];
+		IP2ExpandedString.ipv4ToString(ip, ipAsStr, 0);
+		return ip2asn(ipAsStr);
+	}
+
+	@Override
+	public @Nullable AS v6ip2asn(byte @NotNull [] ip) {
+		assert ip.length == 16;
+		byte[] ipAsStr = new byte[IP2ExpandedString.ipv6StringLength];
+		IP2ExpandedString.ipv6ToString(ip, ipAsStr, 0);
+		return ip2asn(ipAsStr);
+	}
+
+	private AS ip2asn(byte[] ipAsStr) {
 		if (!isAlive) return null;
 
-		// TODO Optimize String alloc
-		byte[] ip0 = ip.getHostAddress().getBytes(StandardCharsets.US_ASCII);
-		byte[] response = request(ip0);
+		byte[] response = request(ipAsStr);
 		// TODO Should we retry on timeout?
 		if (response == null) return null;
 
@@ -404,9 +427,8 @@ public class TcpWhoisClient implements IIP2ASN {
 			response[3] == 'o' &&
 			response[4] == 'r'
 		) {
-			LOGGER.severe("An invalid input was sent to the server!\nRequest ip: " + ip.getHostAddress() +
-						  "\"Whole response: " + Arrays.toString(response) + "\n\"" +
-						  new String(response, StandardCharsets.US_ASCII) + '"');
+			severeUnexpectedResponse(ipAsStr, response, 0, response.length, "An invalid input was sent to the " +
+																			"server!");
 			// TODO Should we retry? We are not logging a warning, we are logging a severe message, as this is
 			//  way worse than the server being non-compliant in some aspects
 			return null;
@@ -429,10 +451,9 @@ public class TcpWhoisClient implements IIP2ASN {
 			return null;
 		}
 
-		if (!Arrays.equals(response, startOfIp, offset, ip0, 0, ip0.length)) {
-			LOGGER.severe("The server answered without following the order of the requests!\nExpected IP: " +
-						  ip.getHostAddress() + "\nResponse: \"" +
-						  new String(response, startOfIp, offset - startOfIp, StandardCharsets.US_ASCII) + '"');
+		if (!areSameIp(response, startOfIp, offset, ipAsStr)) {
+			severeUnexpectedResponse(ipAsStr, response, startOfIp, offset,
+									 "The server answered without following the order of the requests!");
 			// TODO Should we retry? We are not logging a warning, we are logging a severe message, as this is
 			//  way worse than the server being non-compliant in some aspects: Logging this means we assumed
 			//  (wrongly) that the server will always answer in the same order as the requests were made
@@ -482,5 +503,79 @@ public class TcpWhoisClient implements IIP2ASN {
 		String asCC = new String(response, startOfCC, lenOfCC, StandardCharsets.US_ASCII);
 
 		return new AS(asn, asCC);
+	}
+
+	private static boolean areSameIp(byte[] response, int startOfIp, final int length, byte[] extendIp) {
+		if (extendIp.length == IP2ExpandedString.ipv4StringLength) {
+			int exOff = 0, res;
+			byte curr;
+
+			res = response[startOfIp++];
+			if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+				res = (res << 8) | curr;
+				if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+					res = (res << 8) | curr;
+					if (startOfIp < length && response[startOfIp++] != '.') return false;
+				}
+			}
+			if ((res | 0x30_00_00 | 0x30_00 | 0x30) != ((extendIp[exOff++] << 16) |
+														(extendIp[exOff++] << 8) |
+														(extendIp[exOff++]))) return false;
+			++exOff;
+
+			res = response[startOfIp++];
+			if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+				res = (res << 8) | curr;
+				if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+					res = (res << 8) | curr;
+					if (startOfIp < length && response[startOfIp++] != '.') return false;
+				}
+			}
+			if ((res | 0x30_00_00 | 0x30_00 | 0x30) != ((extendIp[exOff++] << 16) |
+														(extendIp[exOff++] << 8) |
+														(extendIp[exOff++]))) return false;
+			++exOff;
+
+			res = response[startOfIp++];
+			if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+				res = (res << 8) | curr;
+				if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+					res = (res << 8) | curr;
+					if (startOfIp < length && response[startOfIp++] != '.') return false;
+				}
+			}
+			if ((res | 0x30_00_00 | 0x30_00 | 0x30) != ((extendIp[exOff++] << 16) |
+														(extendIp[exOff++] << 8) |
+														(extendIp[exOff++]))) return false;
+			++exOff;
+
+			res = response[startOfIp++];
+			if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+				res = (res << 8) | curr;
+				if (startOfIp < length && (curr = response[startOfIp++]) != '.') {
+					res = (res << 8) | curr;
+					if (startOfIp < length && response[startOfIp] != '.') return false;
+				}
+			}
+			return (res | 0x30_00_00 | 0x30_00 | 0x30) == ((extendIp[exOff++] << 16) |
+														   (extendIp[exOff++] << 8) |
+														   (extendIp[exOff]));
+		} else {
+			assert extendIp.length == IP2ExpandedString.ipv6StringLength;
+			return Arrays.equals(response, startOfIp, length, extendIp, 0, IP2ExpandedString.ipv6StringLength);
+		}
+	}
+
+	private static void severeUnexpectedResponse(byte[] ipAsStr, byte[] response, int offset, int endExclusive,
+												 String header) {
+		StringBuilder b = new StringBuilder(header);
+		b.append("\nRequest ip: ")
+		 .append(new String(ipAsStr, StandardCharsets.US_ASCII))
+		 .append("\nResponse: ");
+		Common.printBytes(b, response, response.length);
+		b.append("\nPortion of response as ASCII: \"")
+		 .append(new String(response, offset, endExclusive - offset, StandardCharsets.US_ASCII))
+		 .append('"');
+		LOGGER.severe(b.toString());
 	}
 }

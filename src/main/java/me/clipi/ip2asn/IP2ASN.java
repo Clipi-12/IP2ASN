@@ -7,6 +7,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -80,22 +81,33 @@ public class IP2ASN implements IIP2ASN {
 	@Override
 	@Nullable
 	public AS v4ip2asn(byte @NotNull [] ip) {
-		return IIP2ASN.ipv4CannotHaveAS(ip) ? AS.NULL_AS : ip2asn(ip, IIP2ASN::v4ip2asn);
+		return IIP2ASN.ipv4CannotHaveAS(ip) ? AS.NULL_AS : ip2asn(ip, IIP2ASN::v4ip2asn, true);
 	}
 
 	@Override
 	@Nullable
 	public AS v6ip2asn(byte @NotNull [] ip) {
-		return IIP2ASN.ipv6CannotHaveAS(ip) ? AS.NULL_AS : ip2asn(ip, IIP2ASN::v6ip2asn);
+		return IIP2ASN.ipv6CannotHaveAS(ip) ? AS.NULL_AS : ip2asn(ip, IIP2ASN::v6ip2asn, false);
 	}
 
-	private AS ip2asn(byte[] ip, BiFunction<IIP2ASN, byte[], AS> func) {
+	private static final byte[] forIpStr = " for ip ".getBytes(StandardCharsets.US_ASCII);
+
+	private AS ip2asn(byte[] ip, BiFunction<IIP2ASN, byte[], AS> func, boolean isIpv4) {
 		AS res = func.apply(main, ip);
 		if (res == null) {
-			String ip0 = Arrays.toString(ip);
+			String ip0;
+			{
+				byte[] buf = Arrays.copyOf(forIpStr, forIpStr.length + (isIpv4 ?
+					IP2ExpandedString.ipv4StringLength :
+					IP2ExpandedString.ipv6StringLength));
+				ip0 = new String(isIpv4 ?
+									 IP2ExpandedString.ipv4ToString(ip, buf, forIpStr.length) :
+									 IP2ExpandedString.ipv6ToString(ip, buf, forIpStr.length),
+								 StandardCharsets.US_ASCII);
+			}
 			for (int i = 0, s = fallbacks.length; res == null && i < s; ++i) {
 				IIP2ASN fallback = fallbacks[i];
-				LOGGER.warning("Falling back to " + fallback.getClass().getSimpleName() + " for ip " + ip0);
+				LOGGER.warning("Falling back to " + fallback.getClass().getSimpleName() + ip0);
 				res = func.apply(fallback, ip);
 			}
 		}

@@ -4,7 +4,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 
 public interface IIP2ASN extends AutoCloseable {
 	@Nullable
@@ -20,15 +19,7 @@ public interface IIP2ASN extends AutoCloseable {
 	 *           	<li>The array must remain immutable for the duration of the call.</li>
 	 *           </ul>
 	 */
-	@Nullable
-	default AS v4ip2asn(byte @NotNull [] ip) {
-		try {
-			// TODO Temp solution
-			return ip2asn(InetAddress.getByAddress(ip));
-		} catch (UnknownHostException e) {
-			throw new RuntimeException(e);
-		}
-	}
+	@Nullable AS v4ip2asn(byte @NotNull [] ip);
 
 	/**
 	 * @param ip an IPv6.
@@ -37,15 +28,7 @@ public interface IIP2ASN extends AutoCloseable {
 	 *           	<li>The array must remain immutable for the duration of the call.</li>
 	 *           </ul>
 	 */
-	@Nullable
-	default AS v6ip2asn(byte @NotNull [] ip) {
-		try {
-			// TODO Temp solution
-			return ip2asn(InetAddress.getByAddress(ip));
-		} catch (UnknownHostException e) {
-			throw new RuntimeException(e);
-		}
-	}
+	@Nullable AS v6ip2asn(byte @NotNull [] ip);
 
 	@Override
 	void close();
@@ -61,7 +44,7 @@ public interface IIP2ASN extends AutoCloseable {
 		assert ip.length == 4;
 
 		// See https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml
-		int oc1 = ip[0] & 0xFF, oc2 = ip[1] & 0xFF;
+		final int oc1 = ip[0] & 0xFF, oc2 = ip[1] & 0xFF;
 		return (
 				   oc1 == 0 || oc1 == 10 ||
 				   oc1 == 127 // TODO https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml#note1
@@ -116,7 +99,7 @@ public interface IIP2ASN extends AutoCloseable {
 		assert ip.length == 16;
 
 		// See https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml
-		byte oc1 = ip[0], oc2 = ip[1], oc3 = ip[2], oc4 = ip[3], oc5 = ip[4], oc6 = ip[5];
+		final byte oc1 = ip[0], oc2 = ip[1], oc3 = ip[2], oc4 = ip[3], oc5 = ip[4], oc6 = ip[5];
 		return (
 				   (oc1 & 0xFE) == 0xfc
 			   ) ||
