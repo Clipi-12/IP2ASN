@@ -34,17 +34,17 @@ public class IP2ASN implements IIP2ASN {
 
 	@Nullable
 	public static IP2ASN createDefault() {
-		return createDefault(Duration.ofMillis(2_500), Duration.ofSeconds(5));
+		return createDefault(Duration.ofMillis(2_500), Duration.ofSeconds(5), 0, 0);
 	}
 
-	@Nullable
-	public static IP2ASN createDefault(Duration updPacketLossTimeout, Duration tcpTimeout) {
+	public static IP2ASN createDefault(Duration updPacketLossTimeout, Duration tcpTimeout,
+									   int localUdpPort, int localTcpPort) {
 		ArrayList<IIP2ASN> list = new ArrayList<>();
 
 		list.add(UdpDigWhoisClient.createOrNull(
 			hardcoded(8, 8, 8, 8),
 			hardcoded(1, 1, 1, 1),
-			"origin.asn.cymru.com", "origin6.asn.cymru.com", 53,
+			"origin.asn.cymru.com", "origin6.asn.cymru.com", 53, localUdpPort,
 			updPacketLossTimeout, LOGGER));
 
 		{
@@ -56,7 +56,7 @@ public class IP2ASN implements IIP2ASN {
 				// Just in case the DNS lookup fails, don't force the program to crash...
 				whoisTcp = hardcoded(216, 31, 12, 15);
 			}
-			list.add(new TcpWhoisClient(whoisTcp, 43, tcpTimeout));
+			list.add(new TcpWhoisClient(whoisTcp, 43, localTcpPort, tcpTimeout));
 		}
 
 		// noinspection StatementWithEmptyBody

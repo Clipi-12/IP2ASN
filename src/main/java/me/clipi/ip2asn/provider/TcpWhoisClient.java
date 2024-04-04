@@ -38,7 +38,7 @@ public class TcpWhoisClient implements IIP2ASN {
 
 
 	private final InetAddress host;
-	private final int port;
+	private final int remotePort, localPort;
 	private final long timeoutMillis;
 
 	private static final int
@@ -69,9 +69,10 @@ public class TcpWhoisClient implements IIP2ASN {
 		LockSupport.unpark(periodicFlusher);
 	}
 
-	public TcpWhoisClient(@NotNull InetAddress host, int port, Duration timeout) {
+	public TcpWhoisClient(@NotNull InetAddress host, int remotePort, int localPort, Duration timeout) {
 		this.host = host;
-		this.port = port;
+		this.remotePort = remotePort;
+		this.localPort = localPort;
 		this.timeoutMillis = timeout.toMillis();
 		periodicFlusher = new Thread(() -> {
 			periodic_flush:
@@ -124,7 +125,7 @@ public class TcpWhoisClient implements IIP2ASN {
 		final Socket socket;
 		try {
 			// noinspection resource
-			socket = new Socket(host, port);
+			socket = new Socket(host, remotePort, null, localPort);
 		} catch (ConnectException ex) {
 			LOGGER.log(Level.SEVERE, "Exception while creating TCP socket (probably a timeout)", ex);
 			return;
