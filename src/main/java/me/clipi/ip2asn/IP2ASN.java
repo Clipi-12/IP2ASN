@@ -2,6 +2,7 @@ package me.clipi.ip2asn;
 
 import me.clipi.ip2asn.provider.TcpWhoisClient;
 import me.clipi.ip2asn.provider.UdpDigWhoisClient;
+import me.clipi.ip2asn.routeviews.DnsZonesOriginAs;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -41,6 +42,8 @@ public class IP2ASN implements IIP2ASN {
 	public static IP2ASN createDefault(Duration updPacketLossTimeout, Duration tcpTimeout,
 									   int localUdpPort, int localTcpPort) {
 		ArrayList<IIP2ASN> list = new ArrayList<>();
+
+		list.add(DnsZonesOriginAs.getInstance());
 
 		list.add(UdpDigWhoisClient.createOrNull(
 			hardcoded(8, 8, 8, 8),

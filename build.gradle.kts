@@ -13,6 +13,7 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains:annotations:24.0.0")
+    implementation("org.itadaki:bzip2:0.9.1")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.7.1")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -27,7 +28,8 @@ tasks.test {
 
     failFast = false
 
-    maxHeapSize = "1G"
+    // TODO Reduce the requirements
+    maxHeapSize = "4G"
 
     testLogging {
         showStandardStreams = true

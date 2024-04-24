@@ -213,28 +213,28 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 			return null;
 		}
 
-		int[] offset_asn_cidrMask_asCcOffset_asCcLen = { offset + 4, 0, 0, 0, 0 };
+		int[] offset_asn_cidrSize_asCcOffset_asCcLen = { offset + 4, 0, 0, 0, 0 };
 		for (int i = 0; i < ANCOUNT; ++i) {
-			if (!readTxtAnswer(response, length, offset_asn_cidrMask_asCcOffset_asCcLen))
+			if (!readTxtAnswer(response, length, offset_asn_cidrSize_asCcOffset_asCcLen))
 				return null;
 		}
-		if (offset_asn_cidrMask_asCcOffset_asCcLen[0] != length) {
+		if (offset_asn_cidrSize_asCcOffset_asCcLen[0] != length) {
 			Common.warnUnexpectedPacketReceived(LOGGER, response, length, UDP_EXPECTED_END_OF_PACKET);
 			return null;
 		}
 		String asCountryCode = new String(
-			response, offset_asn_cidrMask_asCcOffset_asCcLen[3], offset_asn_cidrMask_asCcOffset_asCcLen[4],
+			response, offset_asn_cidrSize_asCcOffset_asCcLen[3], offset_asn_cidrSize_asCcOffset_asCcLen[4],
 			StandardCharsets.US_ASCII);
 
-		return new AS(offset_asn_cidrMask_asCcOffset_asCcLen[1], asCountryCode);
+		return new AS(offset_asn_cidrSize_asCcOffset_asCcLen[1], asCountryCode);
 	}
 
 	private static int shortFromBytes(byte high, byte low) {
 		return ((high & 0xFF) << 8) | (low & 0xFF);
 	}
 
-	private static boolean readTxtAnswer(byte[] response, int length, int[] offset_asn_cidrMask_asCcOffset_asCcLen) {
-		int offset = offset_asn_cidrMask_asCcOffset_asCcLen[0];
+	private static boolean readTxtAnswer(byte[] response, int length, int[] offset_asn_cidrSize_asCcOffset_asCcLen) {
+		int offset = offset_asn_cidrSize_asCcOffset_asCcLen[0];
 		try {
 			while (offset < length) {
 				int resHigh = response[offset++] & 0xFF;
@@ -279,31 +279,31 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				return false;
 			}
 
-			offset_asn_cidrMask_asCcOffset_asCcLen[0] = offset;
+			offset_asn_cidrSize_asCcOffset_asCcLen[0] = offset;
 			int asn;
 			{
 				long asn0 = Common.readIntUntilPipe(response, endOfAnswer, length,
-													offset_asn_cidrMask_asCcOffset_asCcLen, 4, LOGGER);
+													offset_asn_cidrSize_asCcOffset_asCcLen, 4, LOGGER);
 				if (asn0 < 0) return false;
 				asn = (int) asn0;
 			}
-			offset = offset_asn_cidrMask_asCcOffset_asCcLen[0];
+			offset = offset_asn_cidrSize_asCcOffset_asCcLen[0];
 
 			final int ipResponseOffset = offset;
 			// noinspection StatementWithEmptyBody
 			while (offset < endOfAnswer && response[offset++] != '/') {
 			}
-			offset_asn_cidrMask_asCcOffset_asCcLen[0] = offset;
+			offset_asn_cidrSize_asCcOffset_asCcLen[0] = offset;
 			final int ipResponseLen;
-			int cidrMask;
+			int cidrSize;
 			{
-				long cidrMask0 = Common.readIntUntilPipe(response, endOfAnswer, length,
-														 offset_asn_cidrMask_asCcOffset_asCcLen, 0, LOGGER);
-				if (cidrMask0 < 0) return false;
-				ipResponseLen = offset - ipResponseOffset + (int) (cidrMask0 >>> 32);
-				cidrMask = (int) cidrMask0;
+				long cidrSize0 = Common.readIntUntilPipe(response, endOfAnswer, length,
+														 offset_asn_cidrSize_asCcOffset_asCcLen, 0, LOGGER);
+				if (cidrSize0 < 0) return false;
+				ipResponseLen = offset - ipResponseOffset + (int) (cidrSize0 >>> 32);
+				cidrSize = (int) cidrSize0;
 			}
-			offset = offset_asn_cidrMask_asCcOffset_asCcLen[0];
+			offset = offset_asn_cidrSize_asCcOffset_asCcLen[0];
 
 			final int countryCodeResponseOffset = offset;
 			while (offset < endOfAnswer && response[offset] != ' ' && response[offset] != '|') ++offset;
@@ -316,24 +316,24 @@ public class UdpDigWhoisClient implements IIP2ASN, AutoCloseable {
 				logLevel, "DNS response of IP->ASN (" + new String(
 					response, ipResponseOffset, ipResponseLen, StandardCharsets.US_ASCII) + " -> " + asn + ")");
 
-			final int prevCidrMask = offset_asn_cidrMask_asCcOffset_asCcLen[2];
-			if (cidrMask > prevCidrMask) {
-				offset_asn_cidrMask_asCcOffset_asCcLen[1] = asn;
-				offset_asn_cidrMask_asCcOffset_asCcLen[2] = cidrMask;
-				offset_asn_cidrMask_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
-				offset_asn_cidrMask_asCcOffset_asCcLen[4] = countryCodeResponseLen;
-			} else if (cidrMask == prevCidrMask && asn < offset_asn_cidrMask_asCcOffset_asCcLen[0]) {
+			final int prevCidrSize = offset_asn_cidrSize_asCcOffset_asCcLen[2];
+			if (cidrSize > prevCidrSize) {
+				offset_asn_cidrSize_asCcOffset_asCcLen[1] = asn;
+				offset_asn_cidrSize_asCcOffset_asCcLen[2] = cidrSize;
+				offset_asn_cidrSize_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
+				offset_asn_cidrSize_asCcOffset_asCcLen[4] = countryCodeResponseLen;
+			} else if (cidrSize == prevCidrSize && asn < offset_asn_cidrSize_asCcOffset_asCcLen[0]) {
 				// If an ip has multiple ASNs associated with it (which should be impossible,
 				// but in reality it may occur), just set the info associated with the lowest ASN
-				offset_asn_cidrMask_asCcOffset_asCcLen[1] = asn;
-				offset_asn_cidrMask_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
-				offset_asn_cidrMask_asCcOffset_asCcLen[4] = countryCodeResponseLen;
+				offset_asn_cidrSize_asCcOffset_asCcLen[1] = asn;
+				offset_asn_cidrSize_asCcOffset_asCcLen[3] = countryCodeResponseOffset;
+				offset_asn_cidrSize_asCcOffset_asCcLen[4] = countryCodeResponseLen;
 			}
 
 			offset = endOfAnswer;
 			return true;
 		} finally {
-			offset_asn_cidrMask_asCcOffset_asCcLen[0] = offset;
+			offset_asn_cidrSize_asCcOffset_asCcLen[0] = offset;
 		}
 	}
 
