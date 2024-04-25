@@ -1,13 +1,10 @@
 package me.clipi.ip2asn;
 
-import org.junit.jupiter.api.*;
-import org.opentest4j.AssertionFailedError;
+import org.junit.jupiter.api.Assertions;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.URISyntaxException;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,29 +12,15 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
-import java.util.function.BiPredicate;
 import java.util.function.Predicate;
-import java.util.logging.Level;
-import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static me.clipi.ip2asn.IoUtils.*;
-import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
-public class TestCorrectCases {
-	private static final Logger LOGGER = Logger.getLogger("Tests.CorrectCases");
-
-	private static Map<InetAddress, AS> data;
-	private static IP2ASN ip2asn;
-	private static final Level LOG_LEVEL = Level.parse(System.getProperty("me.clipi.testing.log_level", "INFO"));
-
-	@AfterAll
-	public static void cleanup() {
-		ip2asn.close();
-	}
-
+class DataSupplier {
+	private static final Logger LOGGER = Logger.getLogger(DataSupplier.class.getSimpleName());
 
 	private static String invokeNetcat(String command, byte[] stdinBytes) throws IOException, InterruptedException {
 		Process p;
@@ -154,83 +137,39 @@ public class TestCorrectCases {
 		return output;
 	}
 
-	@BeforeAll
-	public static void prepareData() throws IOException, URISyntaxException, InterruptedException {
-		ip2asn = IP2ASN.createDefault();
-		Assertions.assertNotNull(ip2asn);
-		Assertions.assertEquals(2, ip2asn.fallbacks.length);
-
+	static void prepareData() throws IOException, URISyntaxException, InterruptedException {
 		Path resources = createDir("tests", "resources");
 
-		String file = isToString(TestCorrectCases.class.getClassLoader().getResourceAsStream("resources/ips.txt"));
+		String file = isToString(TestRunner.class.getClassLoader().getResourceAsStream("resources/ips.txt"));
 
 		String output = cacheNetcat(resources, file);
 
-		data = Collections.unmodifiableMap(
-			output.lines()
-				  .parallel()
-				  .distinct()
-				  .map(line -> Arrays.stream(line.split("\\|"))
-									 .map(String::trim)
-									 .toArray(String[]::new))
-				  .collect(Collectors.toMap(
-					  info -> {
-						  try {
-							  return InetAddress.getByName(info[1]);
-						  } catch (UnknownHostException ex) {
-							  throw new RuntimeException(ex);
-						  }
-					  },
-					  info -> new AS(Integer.parseInt(info[0]), info[2]),
-					  (prevAs, newAs) -> newAs.asn() < prevAs.asn() ? newAs : prevAs
-				  ))
-		);
+		Map<InetAddress, AS> data = output.lines()
+										  .parallel()
+										  .distinct()
+										  .map(line -> Arrays.stream(line.split("\\|"))
+															 .map(String::trim)
+															 .toArray(String[]::new))
+										  .collect(Collectors.toMap(
+											  info -> {
+												  try {
+													  return InetAddress.getByName(info[1]);
+												  } catch (UnknownHostException ex) {
+													  throw new RuntimeException(ex);
+												  }
+											  },
+											  info -> new AS(Integer.parseInt(info[0]), info[2]),
+											  (prevAs, newAs) -> newAs.asn() < prevAs.asn() ? newAs : prevAs
+										  ));
+		TestRunner.ipv4Data = Collections.unmodifiableMap(filter(data, Inet4Address.class));
+		TestRunner.ipv6Data = Collections.unmodifiableMap(filter(data, Inet6Address.class));
+		Assertions.assertEquals(data.size(), TestRunner.ipv4Data.size() + TestRunner.ipv6Data.size());
 	}
 
-	@BeforeAll
-	public static void prepareLogging() {
-		LogManager logManager = LogManager.getLogManager();
-		logManager.getLoggerNames().asIterator().forEachRemaining(name -> {
-			Logger logger = logManager.getLogger(name);
-			if (logger != null) logger.setLevel(LOG_LEVEL);
-		});
-	}
-
-	@TestFactory
-	public Stream<DynamicTest> testMain() {
-		// TODO Check with exact matching
-		return testAllFetches(ip2asn.main.getClass().getSimpleName(), ip2asn.main, AS::equals);
-	}
-
-	@Disabled // Temporarily
-	@TestFactory
-	public Stream<DynamicTest> testFallback() {
-		Stream<DynamicTest> res = Stream.of();
-		for (IIP2ASN fallback : ip2asn.fallbacks)
-			res = Stream.concat(res, testAllFetches(fallback.getClass().getSimpleName(), fallback));
-		return res;
-	}
-
-	private Stream<DynamicTest> testAllFetches(String testNamePrefix, IIP2ASN ip2asn) {
-		return testAllFetches(testNamePrefix, ip2asn, AS::exactMatch);
-	}
-
-	private Stream<DynamicTest> testAllFetches(String testNamePrefix, IIP2ASN ip2asn, BiPredicate<AS, AS> equality) {
-		Assertions.assertNotNull(ip2asn);
-
-		return data.entrySet()
-				   .parallelStream()
-				   .map(info -> dynamicTest(
-					   testNamePrefix + " test for ip " + info.getKey().getHostAddress(),
-					   () -> {
-						   InetAddress ip = info.getKey();
-						   AS expected = info.getValue();
-						   AS fetch = ip2asn.ip2asn(ip);
-						   if (!equality.test(expected, fetch)) throw new AssertionFailedError(
-							   "%s ==> expected: <%s> but was: <%s>".formatted(ip.getHostAddress(), expected, fetch),
-							   expected, fetch
-						   );
-					   })
-				   );
+	private static <K, V, K_Out extends K> Map<K_Out, V> filter(Map<K, V> map, Class<K_Out> klass) {
+		return map.entrySet()
+				  .stream()
+				  .filter(e -> klass.isInstance(e.getKey()))
+				  .collect(Collectors.toMap(e -> klass.cast(e.getKey()), Map.Entry::getValue));
 	}
 }

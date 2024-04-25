@@ -12,7 +12,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Random;
 
-public class IoUtils {
+class IoUtils {
 	public static Path createDir(String first, String... more) throws URISyntaxException, IOException {
 		return Files.createDirectories(
 			Path.of(IoUtils.class.getProtectionDomain()
