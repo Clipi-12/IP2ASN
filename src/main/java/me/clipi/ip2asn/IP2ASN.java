@@ -6,6 +6,7 @@ import me.clipi.ip2asn.routeviews.DnsZonesOriginAs;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -43,7 +44,11 @@ public class IP2ASN implements IIP2ASN {
 									   int localUdpPort, int localTcpPort) {
 		ArrayList<IIP2ASN> list = new ArrayList<>();
 
-		list.add(DnsZonesOriginAs.getInstance());
+		try {
+			list.add(DnsZonesOriginAs.getInstance());
+		} catch (IOException ex) {
+			LOGGER.log(Level.SEVERE, "Exception while creating DnsZonesOriginAs", ex);
+		}
 
 		list.add(UdpDigWhoisClient.createOrNull(
 			hardcoded(8, 8, 8, 8),

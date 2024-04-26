@@ -1,21 +1,30 @@
 package me.clipi.ip2asn.util;
 
+import org.jetbrains.annotations.NotNull;
+
 import java.util.Spliterator;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
+/**
+ * A {@link String} {@code Spliterator} that takes a {@link String} as input and divides it kind of like
+ * {@link String#split(String)} does.
+ *
+ * @apiNote This implementation doesn't parse the delimiter as a regex {@link java.util.regex.Pattern}, and will
+ * return an empty string as the last output if the input ends with the delimiter
+ */
 public class StringSplit implements Spliterator<String> {
 	private final int endExclusive, delimLen;
 	private int i;
-	public final String str, delim;
+	public final @NotNull String str, delim;
 
 
-	public StringSplit(String str, String delim) {
+	public StringSplit(@NotNull String str, @NotNull String delim) {
 		this(str, delim, 0, str.length());
 	}
 
-	private StringSplit(String str, String delim, int offset, int endExclusive) {
+	private StringSplit(@NotNull String str, @NotNull String delim, int offset, int endExclusive) {
 		this.str = str;
 		this.delim = delim;
 		this.delimLen = delim.length();
@@ -25,33 +34,38 @@ public class StringSplit implements Spliterator<String> {
 
 	@Override
 	public boolean tryAdvance(Consumer<? super String> action) {
-		if (i >= endExclusive) return false;
+		int endExclusive = this.endExclusive;
+		// The case i==endExclusive is deliberately not checked here since it represents that
+		// the following string to be consumed is ""
+		if (i > endExclusive) return false;
 		int until = str.indexOf(delim, i);
-		if (until < 0) {
-			action.accept(str.substring(i));
-			this.i = endExclusive;
+		if (until < 0 || until >= endExclusive) {
+			action.accept(str.substring(i, endExclusive));
+			i = endExclusive + 1;
 		} else {
 			action.accept(str.substring(i, until));
-			this.i = until + delimLen;
+			i = until + delimLen;
 		}
 		return true;
 	}
 
 	@Override
-	public Spliterator<String> trySplit() {
-		int curr = i;
-		int delimLen = this.delimLen;
-		int i = this.i = str.indexOf(delim, (curr + endExclusive) >>> 1) + delimLen;
-		if (i < delimLen) {
-			this.i = endExclusive;
-			return null;
+	public StringSplit trySplit() {
+		final int curr = i, delimLen = this.delimLen, endExclusive = this.endExclusive;
+
+		final int nextDelimStart;
+		{
+			final int nextDelimStart0 = str.indexOf(delim, (curr + endExclusive) >>> 1);
+			nextDelimStart = nextDelimStart0 < 0 ? endExclusive : nextDelimStart0;
 		}
-		return new StringSplit(str, delim, curr, i - delimLen);
+
+		this.i = nextDelimStart + delimLen;
+		return new StringSplit(str, delim, curr, Math.min(nextDelimStart, endExclusive + 1));
 	}
 
 	@Override
 	public long estimateSize() {
-		return endExclusive - i;
+		return Math.max((endExclusive - i) / delimLen + 1, 0);
 	}
 
 	@Override

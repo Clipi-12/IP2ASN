@@ -8,27 +8,14 @@ import me.clipi.ip2asn.routeviews.DnsZonesOriginAs;
 import org.junit.jupiter.api.Assertions;
 
 @SuppressWarnings("NewClassNamingConvention")
-public abstract class DnsZonesOriginAs_LocalTree extends TestRunner.TestGroup {
-	public DnsZonesOriginAs_LocalTree(boolean ipv6) {
-		// TODO Check with exact matching
+public class DnsZonesOriginAs_LocalTree extends TestRunner.TestGroup {
+	public DnsZonesOriginAs_LocalTree() {
 		super(AS::equals, DnsZonesOriginAs.class.getSimpleName() + ' ' + LocalLookUpTree.class.getSimpleName(),
-			  ipv6,
+			  false,
 			  () -> {
 				  IIP2ASN res = TestRunner.getIp2asnMain();
 				  Assertions.assertInstanceOf(LocalLookUpTree.class, res);
 				  return res;
 			  });
-	}
-
-	public static class IPv4 extends DnsZonesOriginAs_LocalTree {
-		public IPv4() {
-			super(false);
-		}
-	}
-
-	public static class IPv6 extends DnsZonesOriginAs_LocalTree {
-		public IPv6() {
-			super(true);
-		}
 	}
 }

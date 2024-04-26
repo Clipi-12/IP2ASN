@@ -49,22 +49,23 @@ public class FileCache<Out> {
 
 	public static <Out> FileCache<Out> fromFileTimestamp(Path dir, String dataFileName, URL url,
 														 CheckedFunction<@NotNull InputStream, Out, IOException> generateData) throws IOException {
-		return new FileCache<>(dir, dataFileName, generateData, url::openStream, () -> {
-			URLConnection conn = url.openConnection();
-			try (InputStream _connectionCloser = conn.getInputStream()) {
-				long timestamp = conn.getLastModified();
-				return new byte[] {
-					(byte) (timestamp >>> 56),
-					(byte) (timestamp >>> 48),
-					(byte) (timestamp >>> 40),
-					(byte) (timestamp >>> 32),
-					(byte) (timestamp >>> 24),
-					(byte) (timestamp >>> 16),
-					(byte) (timestamp >>> 8),
-					(byte) (timestamp)
-				};
-			}
-		});
+		return new FileCache<>(dir, dataFileName, generateData, () -> new BufferedInputStream(url.openStream()),
+							   () -> {
+								   URLConnection conn = url.openConnection();
+								   try (InputStream _connectionCloser = conn.getInputStream()) {
+									   long timestamp = conn.getLastModified();
+									   return new byte[] {
+										   (byte) (timestamp >>> 56),
+										   (byte) (timestamp >>> 48),
+										   (byte) (timestamp >>> 40),
+										   (byte) (timestamp >>> 32),
+										   (byte) (timestamp >>> 24),
+										   (byte) (timestamp >>> 16),
+										   (byte) (timestamp >>> 8),
+										   (byte) (timestamp)
+									   };
+								   }
+							   });
 	}
 
 	public FileCache(Path dir, String dataFileName,
@@ -130,7 +131,7 @@ public class FileCache<Out> {
 		protected FileTeeInputStream(InputStream is, Path file) throws IOException {
 			LOGGER.fine("Caching data in " + file);
 			this.is = is;
-			this.os = Files.newOutputStream(file);
+			this.os = new BufferedOutputStream(Files.newOutputStream(file));
 		}
 
 		@Override

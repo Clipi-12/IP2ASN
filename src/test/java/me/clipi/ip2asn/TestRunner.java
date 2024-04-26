@@ -12,7 +12,6 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -23,18 +22,26 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 
 public class TestRunner implements TestExecutionListener {
-	private static final AtomicBoolean isReady = new AtomicBoolean();
 	private static final Logger LOGGER = Logger.getLogger(TestRunner.class.getSimpleName());
 
 	static Map<Inet4Address, AS> ipv4Data;
 	static Map<Inet6Address, AS> ipv6Data;
 	private static IP2ASN ip2asn;
 
+	@SneakyThrows
+	private static synchronized void ensureData() {
+		if (ip2asn != null) return;
+		prepareIp2Asn();
+		DataSupplier.prepareData();
+	}
+
 	public static IIP2ASN getIp2asnMain() {
+		ensureData();
 		return ip2asn.main;
 	}
 
 	public static IIP2ASN[] getIp2asnFallbacks() {
+		ensureData();
 		return ip2asn.fallbacks;
 	}
 
@@ -63,10 +70,7 @@ public class TestRunner implements TestExecutionListener {
 	@SneakyThrows
 	@Override
 	public void testPlanExecutionStarted(TestPlan testPlan) {
-		if (isReady.getAndSet(true)) throw new IllegalStateException();
 		prepareLogging();
-		prepareIp2Asn();
-		DataSupplier.prepareData();
 	}
 
 	@Override
